@@ -288,8 +288,27 @@ pub struct PhotoParams {
     pub save: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema, Clone, Default)]
+pub struct OrbitSpec {
+    /// Camera azimuth at the start / end in degrees (0 = front, 90 = right). Default -30 -> 330 (one full turn).
+    pub az_from: Option<f32>,
+    pub az_to: Option<f32>,
+    /// Elevation above the horizon at the start / end in degrees (default 32 -> 16: a swoop down).
+    pub el_from: Option<f32>,
+    pub el_to: Option<f32>,
+    /// Zoom at the start / end (default 1.45 -> 1.7: a slight dolly in; 1 = whole bounding sphere).
+    pub zoom_from: Option<f32>,
+    pub zoom_to: Option<f32>,
+    /// Point to orbit around [x, y, z] mm (default: centre of the visible parts).
+    pub target: Option<[f32; 3]>,
+    /// Ease in/out (default true).
+    pub ease: Option<bool>,
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct VideoParams {
+    /// Camera path: orbit around the model (a "swoop"). Without a motion, parts stay put.
+    pub orbit: Option<OrbitSpec>,
     /// Saved motion to record (see `motion {save_as}`).
     pub run: Option<String>,
     /// Or an inline motion (same fields as the `motion` tool); fields here override `run`.
@@ -1249,7 +1268,9 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
     if mp.run.is_none() {
         mp.run = p.run.clone();
     }
-    let spec = resolve_motion(app, &mp)?;
+    let has_motion = mp.run.is_some() || mp.parts.is_some();
+    anyhow::ensure!(has_motion || p.orbit.is_some(), "give a motion (run / motion) and/or an orbit");
+    let spec = if has_motion { Some(resolve_motion(app, &mp)?) } else { None };
     let fps = p.fps.unwrap_or(30).clamp(1, 120);
     let n = ((p.seconds.unwrap_or(3.0).clamp(0.1, 120.0) * fps as f32).round() as usize).max(2);
     let even = |v: u32| (v.clamp(64, 3840) / 2) * 2;
@@ -1266,7 +1287,11 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
     // Exact checks per distinct frame.
     let annotate = p.annotate.unwrap_or(true);
     let t_checks = Instant::now();
-    let checks = if annotate { Some(check_many(&app.scene, &spec, &ts).0) } else { None };
+    let checks = match &spec {
+        Some(spec) if annotate => Some(check_many(&app.scene, spec, &ts).0),
+        _ => None,
+    };
+    let horizon = spec.as_ref().map(|s| s.horizon).unwrap_or(0.0);
     let checks_ms = t_checks.elapsed().as_secs_f64() * 1e3;
     let label = |k: usize| -> String {
         let base = format!("T={:.2}S", k as f32 / fps as f32);
@@ -1274,12 +1299,15 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
             Some(c) if c[k].interfering() => format!("{base}  CLASH"),
             Some(c) => match c[k].min {
                 Some((d, _, _)) => format!("{base}  {d:.1} MM"),
-                None => format!("{base}  >{:.0} MM", spec.horizon),
+                None => format!("{base}  >{horizon:.0} MM"),
             },
             None => base,
         }
     };
-    let poses: Vec<Vec<Mat4>> = ts.iter().map(|&t| spec.poses_at(&app.scene, t)).collect();
+    let poses: Vec<Vec<Mat4>> = match &spec {
+        Some(spec) => ts.iter().map(|&t| spec.poses_at(&app.scene, t)).collect(),
+        None => vec![app.scene.parts.iter().map(|p| p.pose).collect(); n],
+    };
 
     // One fixed camera for the whole clip, framing every frame's pose.
     let mut rp = p.render.clone().unwrap_or_default();
@@ -1291,12 +1319,49 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
         &rp,
         Some(Frames { poses: sample.iter().map(|&k| poses[k].clone()).collect(), labels: sample.iter().map(|_| String::new()).collect(), raw: true }),
     )?;
-    let cam = probe.cams[0];
+    let mut cams = vec![probe.cams[0]; n];
+    if let Some(o) = &p.orbit {
+        // Constant-distance perspective orbit around the target, sized to the bounding sphere of
+        // everything visible during the clip.
+        let vis: Vec<usize> = (0..app.scene.parts.len()).filter(|&i| probe.styles[i].visible && !app.scene.parts[i].empty).collect();
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for pose in &poses {
+            for &i in &vis {
+                let (a, b) = app.scene.posed_box(i, pose[i]);
+                lo = lo.min(a);
+                hi = hi.max(b);
+            }
+        }
+        let target = o.target.map(Vec3::from).unwrap_or((lo + hi) * 0.5);
+        let radius = (hi - lo).length() * 0.5;
+        let half_fov = 15f32.to_radians();
+        let aspect = w as f32 / h as f32;
+        let fit_half = if aspect >= 1.0 { half_fov } else { (half_fov.tan() * aspect).atan() };
+        let ease = o.ease.unwrap_or(true);
+        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        for (k, cam) in cams.iter_mut().enumerate() {
+            let t = ts[k];
+            let te = if ease { t * t * (3.0 - 2.0 * t) } else { t };
+            let az = lerp(o.az_from.unwrap_or(-30.0), o.az_to.unwrap_or(330.0), te).to_radians();
+            let el = lerp(o.el_from.unwrap_or(32.0), o.el_to.unwrap_or(16.0), te).to_radians();
+            let zoom = lerp(o.zoom_from.unwrap_or(1.45), o.zoom_to.unwrap_or(1.7), te).max(0.05);
+            let cam_pos_dir = Vec3::new(az.sin() * el.cos(), -az.cos() * el.cos(), el.sin());
+            let dir = -cam_pos_dir;
+            let right = dir.cross(Vec3::Z).normalize();
+            let up = right.cross(dir).normalize();
+            let dist = radius / fit_half.sin() / zoom;
+            *cam = CamSpec { dir: dir.into(), up: up.into(), target: target.into(), half_height: dist * half_fov.tan(), distance: Some(dist) };
+        }
+    }
+    let cam = cams[0];
     let mut rp = p.render.clone().unwrap_or_default();
     rp.cameras = Some(vec![cam]);
     rp.width = Some(w);
     rp.height = Some(h);
     rp.cols = Some(1);
+    if checks.is_none() && rp.labels.is_none() {
+        rp.labels = Some(false); // nothing to annotate: clean frames
+    }
 
     let t_frames = Instant::now();
     let mut frames: Vec<Frame> = Vec::with_capacity(n);
@@ -1310,7 +1375,7 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
         for (k, pose) in poses.iter().enumerate() {
             let out = photo::photo(&photo::PhotoReq {
                 scene: &app.scene,
-                cam,
+                cam: cams[k],
                 width: w,
                 height: h,
                 styles: &resolved.styles,
@@ -1332,6 +1397,7 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
         }
     } else {
         for (k, pose) in poses.iter().enumerate() {
+            rp.cameras = Some(vec![cams[k]]);
             let out = do_render_frames(app, &rp, Some(Frames { poses: vec![pose.clone()], labels: vec![label(k)], raw: true }))?;
             frames.push(out.frame.ok_or_else(|| anyhow::anyhow!("no frame"))?);
         }
@@ -1353,7 +1419,8 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
         None => {
             let dir = app.project_path.as_ref().and_then(|pp| pp.parent().map(|d| d.join("videos"))).unwrap_or_else(std::env::temp_dir);
             std::fs::create_dir_all(&dir)?;
-            dir.join(format!("{}.{format}", spec.p.run.clone().or(p.run.clone()).unwrap_or_else(|| "motion".into())))
+            let stem = spec.as_ref().and_then(|s| s.p.run.clone()).or(p.run.clone()).unwrap_or_else(|| if p.orbit.is_some() { "orbit".into() } else { "motion".into() });
+            dir.join(format!("{stem}.{format}"))
         }
     };
     let t_enc = Instant::now();
@@ -1402,7 +1469,7 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
         } else if let Some((k, d)) = c.iter().enumerate().filter_map(|(k, r)| r.min.map(|(d, _, _)| (k, d))).min_by(|x, y| x.1.total_cmp(&y.1)) {
             let _ = write!(text, "\nno interference; tightest {d:.2} mm at frame {k}");
         } else {
-            let _ = write!(text, "\nno interference; nothing within {:.0} mm", spec.horizon);
+            let _ = write!(text, "\nno interference; nothing within {horizon:.0} mm");
         }
     }
     for nn in notes {
