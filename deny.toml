@@ -1,0 +1,35 @@
+# cargo-deny: licences, security advisories, banned/duplicate crates, allowed sources.
+# Run locally with `cargo deny check`.
+
+[graph]
+targets = [{ triple = "aarch64-apple-darwin" }, { triple = "x86_64-apple-darwin" }]
+all-features = false
+
+[advisories]
+# RustSec advisory database: fail on vulnerabilities, yanked crates and unmaintained crates we use directly
+yanked = "deny"
+unmaintained = "workspace"
+
+[licenses]
+# Our own code is MIT OR Apache-2.0; every dependency must be compatible with both.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "Unicode-3.0",
+  "Unlicense",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

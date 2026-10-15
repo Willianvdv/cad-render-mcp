@@ -1,0 +1,9 @@
+# gitleaks: default secret rules (API keys, tokens, private keys, credentials...).
+title = "cad-render-mcp gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "generated CAD fixtures and binary media"
+paths = ['''examples/.*\.step''', '''docs/gallery/.*''']
