@@ -1,4 +1,16 @@
-# SHOW ME THE THING - cad-render-mcp to render CAD files directly from your Claude
+# cad-render-mcp to render CAD files directly into drawings, photorealistic renders, animations and videos
+
+**Input:** a CAD file (STEP, BREP or IGES).
+
+**Output:**
+
+* CAD-style images from any angle, returned inline in about 10 ms: shaded, x-ray, section cuts,
+  highlighted or ghosted parts, colour by part, on a backdrop photo
+* drawings: orthographic front, top and side views with a scale bar
+* photorealistic stills (Cycles) with materials, floor and studio, sky or HDRI lighting
+* animations as GIF: orbits around the model and part motions
+* videos as MP4, CAD-style or photorealistic
+* exact numbers: volume, area, mass, radii, distances, clearances and interference
 
 **A fast feedback loop for CAD: your AI agent sees, measures and presents your models in milliseconds.**
 
