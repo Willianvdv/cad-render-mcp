@@ -10,11 +10,11 @@ categories = ["graphics", "rendering"]
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 bytemuck = { version = "1", features = ["derive"] }
 exr = "1"
 gif = "0.14"
-glam = { version = "0.30", features = ["bytemuck"] }
+glam = { version = "0.34", features = ["bytemuck"] }
 libc = "0.2"
 objc2 = "0.6"
 objc2-av-foundation = { version = "0.3", features = ["AVAssetWriter", "AVAssetWriterInput", "AVMediaFormat", "AVVideoSettings", "objc2-core-video", "objc2-core-media"] }
@@ -23,14 +23,14 @@ objc2-core-media = { version = "0.3", features = ["CMTime"] }
 objc2-core-video = { version = "0.3", features = ["CVPixelBuffer", "CVImageBuffer", "CVBuffer", "CVReturn", "CVPixelBufferPool"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSDictionary", "NSValue", "NSError", "NSObject", "NSArray"] }
 png = "0.18"
-pollster = "0.4"
+pollster = "1.0"
 rmcp = { version = "3.5", features = ["server", "transport-io", "macros"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "fs"] }
 wgpu = { version = "30", default-features = false, features = ["metal", "wgsl"] }
-zune-jpeg = "0.4"
+zune-jpeg = "0.5"
 
 [build-dependencies]
 cc = "1"
