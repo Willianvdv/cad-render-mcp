@@ -268,7 +268,8 @@ pub fn load_image(path: &Path) -> anyhow::Result<Frame> {
         return Ok(Frame { w, h, rgba });
     }
     if bytes.starts_with(&[0xFF, 0xD8]) {
-        let mut dec = zune_jpeg::JpegDecoder::new(&bytes[..]);
+        let mut dec =
+            zune_jpeg::JpegDecoder::new(zune_jpeg::zune_core::bytestream::ZCursor::new(&bytes[..]));
         let px = dec.decode().map_err(|e| anyhow::anyhow!("JPEG: {e:?}"))?;
         let info = dec
             .info()
