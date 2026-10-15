@@ -1,4 +1,4 @@
-# SHOW ME THE THING!
+# SHOW ME THE THING - cad-render-mcp to render CAD files directly from your Claude
 
 **A fast feedback loop for CAD: your AI agent sees, measures and presents your models in milliseconds.**
 
