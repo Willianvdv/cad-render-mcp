@@ -1,0 +1,4 @@
+/target
+# CAD fixtures are private design data: keep them out of the public repo
+/testdata
+*.png
