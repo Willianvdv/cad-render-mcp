@@ -12,6 +12,7 @@ categories = ["graphics", "rendering"]
 anyhow = "1"
 base64 = "0.22"
 bytemuck = { version = "1", features = ["derive"] }
+exr = "1"
 glam = { version = "0.30", features = ["bytemuck"] }
 libc = "0.2"
 png = "0.18"

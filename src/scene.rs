@@ -21,6 +21,7 @@ pub struct Part {
     /// Surface point closest to the bbox centre (for labels).
     pub anchor: Vec3,
     pub gpu: GpuMesh,
+    pub cpu: std::sync::Arc<CpuMesh>,
     pub empty: bool,
     /// Current rigid placement (from `move`), applied on top of the file's own placement.
     pub pose: glam::Mat4,
@@ -80,7 +81,15 @@ fn shellexpand(p: &str) -> String {
     p.to_string()
 }
 
+/// CPU copy of a part's triangles (for exporters such as `photo`).
+pub struct CpuMesh {
+    pub pos: Vec<[f32; 3]>,
+    pub nrm: Vec<[f32; 3]>,
+    pub idx: Vec<u32>,
+}
+
 struct Built {
+    cpu: std::sync::Arc<CpuMesh>,
     name: String,
     path: String,
     color: Option<[f32; 3]>,
@@ -145,7 +154,7 @@ impl Scene {
             let mid = (lo + hi) * 0.5;
             let anchor = m.pos.iter().map(|p| Vec3::from(*p)).min_by(|a, b| a.distance_squared(mid).total_cmp(&b.distance_squared(mid))).unwrap_or(mid);
             tris += m.idx.len() / 3;
-            parts.push(Built { name: m.name.clone(), path: m.path.clone(), color: m.color, lo, hi, anchor, gpu: r.upload(m), empty });
+            parts.push(Built { cpu: std::sync::Arc::new(CpuMesh { pos: m.pos.clone(), nrm: m.nrm.clone(), idx: m.idx.clone() }), name: m.name.clone(), path: m.path.clone(), color: m.color, lo, hi, anchor, gpu: r.upload(m), empty });
         }
         let upload_ms = t2.elapsed().as_secs_f64() * 1e3;
         Ok((File { path: path.to_path_buf(), mtime: mtime(path), doc, load_ms, mesh_ms, upload_ms, tris }, parts))
@@ -200,7 +209,7 @@ impl Scene {
                     (format!("p{}", self.next_id), glam::Mat4::IDENTITY)
                 }
             };
-            new_parts.push(Part { id, name: b.name, path: b.path, file: fi, local, file_color: b.color, bmin: b.lo, bmax: b.hi, anchor: b.anchor, gpu: b.gpu, empty: b.empty, pose });
+            new_parts.push(Part { id, name: b.name, path: b.path, file: fi, local, file_color: b.color, bmin: b.lo, bmax: b.hi, anchor: b.anchor, gpu: b.gpu, cpu: b.cpu, empty: b.empty, pose });
         }
         let insert_at = insert_at.min(self.parts.len());
         self.parts.splice(insert_at..insert_at, new_parts);

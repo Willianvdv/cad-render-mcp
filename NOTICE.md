@@ -24,3 +24,9 @@ OCCT's Homebrew build links Intel oneTBB (Apache-2.0) for parallel meshing.
 All crates in the dependency tree are permissive (MIT, Apache-2.0, BSD, Zlib, ISC, Unicode-3.0);
 check with `cargo metadata` or `cargo deny check licenses`. Notable ones: `rmcp` (official MCP
 Rust SDK, Apache-2.0), `wgpu` (MIT OR Apache-2.0), `glam`, `png`, `tokio`, `serde`.
+
+## Cycles (optional, `photo`)
+
+Cycles (https://www.cycles-renderer.org, Apache-2.0) is run as a separate executable; it is not
+linked into shapeshot. Distributions that bundle it must include its LICENSE and third-party notices
+(its prebuilt dependencies such as OpenImageIO, OpenImageDenoise and Embree are permissively licensed).

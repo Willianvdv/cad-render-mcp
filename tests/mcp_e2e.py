@@ -199,6 +199,13 @@ def main():
     r, t, _ = step(c, "clash tilted", "move", {"parts": ["PLACEHOLDERS:1#1"], "rotate": {"axis": "x", "deg": 10, "origin": [0, 2018.8, 189.4]}})
     r, t, _ = step(c, "clash at 10deg", "clash", {"parts": ["PLACEHOLDERS:1#1", "BAR_ISB*"]})
     check(t.count("CLASH") == 5, "all 5 bars under the tilted wheel reported (incl. failed-boolean fallback)")
+    # 16. photo (Cycles) when available
+    cycles = os.environ.get("SHAPESHOT_CYCLES", os.path.expanduser("~/src/shapeshot-deps/cycles/install/cycles"))
+    if os.path.exists(cycles):
+        r, t, img = step(c, "photo", "photo", {"preset": "lamps", "width": 640, "height": 400, "samples": 16, "timeout_s": 600}, True)
+        check(img is not None and png_size(img[0]) == (640, 400), "photo returns a 640x400 path-traced PNG")
+    else:
+        print("  skip photo (Cycles not built)")
     c2 = Client([BIN])
     c2.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e2", "version": "0"}})
     c2.send({"jsonrpc": "2.0", "method": "notifications/initialized"})

@@ -42,6 +42,18 @@ cargo build --release
 claude mcp add shapeshot -- "$PWD/target/release/shapeshot"
 ```
 
+Optional, for `photo`: build [Cycles](https://www.cycles-renderer.org) standalone (Apache-2.0,
+Metal backend), which shapeshot runs as a separate process:
+
+```sh
+brew install cmake git-lfs && git lfs install
+git clone https://projects.blender.org/blender/cycles.git ~/src/shapeshot-deps/cycles
+cd ~/src/shapeshot-deps/cycles && make update && make     # ~1.3 GB of prebuilt libs, then a C++ build
+```
+
+shapeshot looks for `$SHAPESHOT_CYCLES`, then `cycles/cycles` next to its own binary, then
+`~/src/shapeshot-deps/cycles/install/cycles`.
+
 `OCCT_DIR` overrides the OCCT location (default: `brew --prefix opencascade`).
 
 ## Tools
@@ -58,6 +70,7 @@ claude mcp add shapeshot -- "$PWD/target/release/shapeshot"
 | `motion` | sweep parts through a translate/rotate in N steps: exact clearance and interference per step, first contact, contact sheet of frames (fixed camera). `save_as` / `run` named motions |
 | `save_view` | store the last render (all options + the exact cameras) as a named view; `render {preset}` reproduces it pixel-for-pixel in any session, even after the model changes |
 | `saved` | list (or delete) the project's saved views, poses and motions |
+| `photo` | photo-realistic still, path-traced with Cycles on the GPU (Metal): physical materials (`materials {selector: aluminium/steel/zinc/rubber/…/#hex}`, guessed from CAD colours by default), studio light, shadowed floor, denoised. Same viewpoint options as `render` (saved views, poses) |
 | `close` | unload everything |
 
 Saved views, poses and motions live in `.shapeshot.json` next to the first opened file (override
@@ -95,6 +108,7 @@ Dual-licensed MIT OR Apache-2.0. OCCT is used as an external LGPL-2.1 (+ Open CA
 Exception) shared library; see [NOTICE.md](NOTICE.md) for what binary distributions must include.
 
 ## Roadmap
+- bundle Cycles in release archives (Apache-2.0; ship its license + notices)
 
 - on-disk cache of parsed shapes (OCCT binary BRep) for instant re-open of big unchanged STEP files
 - `section_profile`: 2D outline + dimensions of a cut (sheet-metal flat checks)

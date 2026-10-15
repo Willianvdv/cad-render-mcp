@@ -3,6 +3,7 @@
 use crate::camera::{self, CamSpec, Up};
 use crate::project::{self, Project, SavedPose, SavedView};
 use crate::render::{Edges, PartStyle, RenderReq, Renderer};
+use crate::photo;
 use crate::scene::{self, Scene};
 use base64::Engine;
 use glam::{Mat4, Vec3};
@@ -246,6 +247,48 @@ pub struct MotionParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct PhotoParams {
+    /// Saved view to photograph (its frozen camera is reused unless you reframe).
+    pub preset: Option<String>,
+    /// View (first one is used): same names as `render` (iso, front, az30el20, dir:x,y,z).
+    pub views: Option<Vec<String>>,
+    /// Exact camera (as stored by `save_view`).
+    pub cameras: Option<Vec<CamSpec>>,
+    /// Frame this box: [xmin, ymin, zmin, xmax, ymax, zmax] mm.
+    pub region: Option<[f32; 6]>,
+    /// Frame these parts.
+    pub focus: Option<Vec<String>>,
+    /// Zoom factor (>1 zooms in).
+    pub zoom: Option<f32>,
+    /// Perspective (default true for photos unless a saved view says otherwise).
+    pub perspective: Option<bool>,
+    /// Model up axis: "z" (default) or "y".
+    pub up: Option<String>,
+    /// Only show these parts.
+    pub show: Option<Vec<String>>,
+    /// Hide these parts.
+    pub hide: Option<Vec<String>>,
+    /// Materials: selector -> preset (aluminium, brushed_aluminium, anodised_black, steel, stainless,
+    /// zinc, black_powdercoat, rubber, plastic, chrome) or "#rrggbb" paint. Default: guessed from the CAD colour.
+    pub materials: Option<BTreeMap<String, String>>,
+    /// Image size in px (default 1600 x 1000).
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// Path-tracing samples (default 64, denoised).
+    pub samples: Option<u32>,
+    /// Ground plane with soft shadows (default true).
+    pub floor: Option<bool>,
+    /// Environment colour "#rrggbb" (default light studio grey).
+    pub background: Option<String>,
+    /// Exposure in stops (default 0; +1 = twice as bright).
+    pub exposure: Option<f32>,
+    /// Seconds before giving up (default 180; the first run compiles Metal kernels).
+    pub timeout_s: Option<u64>,
+    /// Also write the PNG to this path.
+    pub save: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct SaveViewParams {
     /// Name to save the last render under (overwrites).
     pub name: String,
@@ -421,6 +464,10 @@ pub fn do_open(app: &mut App, p: &OpenParams) -> anyhow::Result<String> {
 pub struct Rendered {
     pub png: Vec<u8>,
     pub text: String,
+    /// Resolved camera per tile, the parts drawn and their styles (for `photo`).
+    pub cams: Vec<CamSpec>,
+    pub styles: Vec<PartStyle>,
+    pub poses: Vec<Mat4>,
 }
 
 /// Motion frames: every tile uses the first view's camera with its own set of part poses.
@@ -611,6 +658,8 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
         },
     };
     let labels_out: Vec<String> = req.views.iter().map(|v| v.label.clone()).collect();
+    let styles_out = req.styles.clone();
+    let poses_out = req.poses[0].clone();
     let renderer = app.renderer.as_mut().ok_or_else(|| anyhow::anyhow!(app.renderer_err.clone().unwrap_or_default()))?;
     let out = renderer.render(&req)?;
     notes.extend(out.notes);
@@ -653,7 +702,7 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
     for nn in notes {
         let _ = write!(text, "\nnote: {nn}");
     }
-    Ok(Rendered { png: out.png, text })
+    Ok(Rendered { png: out.png, text, cams: out.cams, styles: styles_out, poses: poses_out })
 }
 
 fn one(sc: &Scene, s: &str) -> anyhow::Result<usize> {
@@ -1014,6 +1063,90 @@ pub fn do_motion(app: &mut App, p_in: &MotionParams) -> anyhow::Result<(String, 
     Ok((s, png))
 }
 
+pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, String)> {
+    let t0 = Instant::now();
+    let (w, h) = (p.width.unwrap_or(1600).clamp(64, 8192), p.height.unwrap_or(1000).clamp(64, 8192));
+    // Resolve camera, visibility and poses exactly like `render` (a quick GPU pass at the same aspect).
+    let scale = (2048.0 / w.max(h) as f32).min(1.0);
+    let has_saved_cam = p.preset.as_ref().is_some_and(|n| app.project.views.get(n).is_some_and(|v| v.cameras.is_some()));
+    let rp = RenderParams {
+        preset: p.preset.clone(),
+        views: p.views.clone(),
+        cameras: p.cameras.clone(),
+        region: p.region,
+        focus: p.focus.clone(),
+        zoom: p.zoom,
+        perspective: p.perspective.or(if has_saved_cam || p.cameras.is_some() { None } else { Some(true) }),
+        up: p.up.clone(),
+        show: p.show.clone(),
+        hide: p.hide.clone(),
+        width: Some(((w as f32 * scale) as u32).max(64)),
+        height: Some(((h as f32 * scale) as u32).max(64)),
+        labels: Some(false),
+        scale_bar: Some(false),
+        ..Default::default()
+    };
+    let resolved = do_render(app, &rp)?;
+    let cam = *resolved.cams.first().ok_or_else(|| anyhow::anyhow!("no camera"))?;
+    let sc = &app.scene;
+    let mut materials: Vec<photo::Material> =
+        sc.parts.iter().map(|part| photo::auto_material(part.file_color.unwrap_or([0.74, 0.77, 0.81]))).collect();
+    let mut notes = Vec::new();
+    if let Some(ms) = &p.materials {
+        for (sel, name) in ms {
+            let (ix, missing) = sc.select(std::slice::from_ref(sel));
+            if !missing.is_empty() {
+                notes.push(format!("no part matched {sel:?}"));
+            }
+            let m = match photo::material_preset(&name.to_ascii_lowercase()) {
+                Some(m) => m,
+                None if name.starts_with('#') => photo::Material { color: parse_hex(name)?, metallic: 0.0, roughness: 0.4, anisotropic: 0.0 },
+                None => anyhow::bail!("unknown material {name:?}"),
+            };
+            for i in ix {
+                materials[i] = m;
+            }
+        }
+    }
+    let bg = match &p.background {
+        Some(h) => parse_hex(h)?,
+        None => [0.92, 0.93, 0.95],
+    };
+    let work_dir = std::env::temp_dir().join(format!("shapeshot-photo-{}", std::process::id()));
+    let out = photo::photo(&photo::PhotoReq {
+        scene: sc,
+        cam,
+        width: w,
+        height: h,
+        styles: &resolved.styles,
+        poses: &resolved.poses,
+        materials,
+        samples: p.samples.unwrap_or(64).clamp(1, 4096),
+        floor: p.floor.unwrap_or(true),
+        background: bg,
+        timeout: std::time::Duration::from_secs(p.timeout_s.unwrap_or(180)),
+        exposure: p.exposure.unwrap_or(0.0),
+        work_dir,
+    })?;
+    if let Some(path) = &p.save {
+        std::fs::write(path, &out.png)?;
+        notes.push(format!("saved {path}"));
+    }
+    let mut text = format!(
+        "{w}x{h} px path-traced (Cycles, Metal), {} samples, {} tris; {:.1} s total (scene export {:.0} ms, render {:.1} s), {} KB",
+        p.samples.unwrap_or(64),
+        out.tris,
+        t0.elapsed().as_secs_f64(),
+        out.export_ms,
+        out.render_ms / 1e3,
+        out.png.len() / 1024
+    );
+    for n in notes {
+        let _ = write!(text, "\nnote: {n}");
+    }
+    Ok((out.png, text))
+}
+
 // ---------- tools ----------
 
 #[tool_router]
@@ -1117,6 +1250,15 @@ impl Shapeshot {
             }
             content.push(ContentBlock::text(text));
             Ok(CallToolResult::success(content))
+        })
+        .await
+    }
+
+    #[tool(description = "Photo-realistic still (path-traced with Cycles on the GPU): physical materials (aluminium, steel, rubber, paint...), soft studio light and a shadowed floor. Takes the same viewpoint options as `render`, incl. saved views and poses. Seconds per image, so use `render` for checks and `photo` for presentation.")]
+    async fn photo(&self, Parameters(p): Parameters<PhotoParams>) -> Result<CallToolResult, ErrorData> {
+        self.with_app(move |app| {
+            let (png, text) = do_photo(app, &p)?;
+            Ok(CallToolResult::success(vec![ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(&png), "image/png"), ContentBlock::text(text)]))
         })
         .await
     }

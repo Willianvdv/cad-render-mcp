@@ -3,6 +3,7 @@
 mod camera;
 mod font;
 mod occt;
+mod photo;
 mod project;
 mod render;
 mod scene;
