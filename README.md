@@ -1,172 +1,196 @@
 # cad-render-mcp
 
-**Let an AI agent look at, measure and present your CAD models: fast, exact, and without a CAD GUI.**
+**A fast feedback loop for CAD: your AI agent sees, measures and presents your models in milliseconds.**
 
 `cad-render-mcp` is a headless CAD viewer and geometry checker that speaks only
-[MCP](https://modelcontextprotocol.io). Point Claude (or any MCP client) at STEP / BREP / IGES files
-and it can render them from any angle in milliseconds and return the images inline. It can also
-answer exact geometry questions (volume, mass, bend radii, clearances, interference), move parts
-around and sweep them through motions, save camera views, and produce photo-realistic stills and
-videos.
+[MCP](https://modelcontextprotocol.io). Give Claude (or any MCP client) a STEP, BREP or IGES file
+and it can:
 
-![Photo-realistic render of a roof rack](docs/gallery/12_photo_hero.png)
+* look at it from any angle and get the image back inline, in about 10 ms;
+* ask exact questions (volume, mass, radii, clearances, interference);
+* move parts, sweep motions and check them;
+* keep camera views so every iteration is seen from the same place;
+* produce photo-realistic stills and videos when you need to show it.
 
-| CAD-style fly-around (`video`, fast renderer) | Photo-realistic fly-around (`video`, Cycles) |
+It runs headless as a single binary and works straight from your model files.
+
+![Photo-realistic render](docs/gallery/12_photo_hero.png)
+
+| CAD-style fly-around, 195 frames in 1 s | Photo-realistic fly-around (Cycles) |
 |---|---|
 | ![swoop](docs/gallery/swoop.gif) | ![photo swoop](docs/gallery/swoop_photo.gif) |
 
----
-
-## Why this exists
-
-We designed an aluminium van roof rack in a long Claude session that drove **Autodesk Fusion** through
-its MCP add-in. That session had 421 Fusion calls over 4 days. They cost 78 minutes of pure waiting,
-26 calls hit the 60 s MCP timeout and 37 errored. Modal dialogs blocked the API, and every screenshot
-was written to disk and read back one view at a time.
-
-The agent didn't need a CAD *application*. It needed **eyes and a ruler**. That's what this is:
-
-| Task | Fusion via MCP (measured) | cad-render-mcp (Apple M4) |
-|---|---|---|
-| Open the 18-part assembly | median 5.4 s, some timeouts | **0.55 s** |
-| One screenshot | median 2.7 s (+ file round trip) | **6 ms**, inline |
-| Four views | 4 calls + 4 file reads | **14 ms**, one call, one image |
-| Interference check | ~15 s per check | **0.4–1.3 s** for the whole assembly |
-| Minimum distance | script | **~150 ms** |
-| Bend radii, volume, mass | face-loop scripts | **~20 ms** |
-| Model changed on disk | re-run scripts | reloaded automatically on the next call |
-| Photo-realistic still | (not available) | **2–10 s** (Cycles on Metal) |
-| 6 s fly-around video | (not available) | **1 s** CAD style, ~5 min photo quality |
-
-Modelling moves to **geometry-as-code** that exports STEP, e.g.
-[build123d](https://github.com/gumyr/build123d) or CadQuery (both OCCT-based, Apache-2.0). Fusion,
-FreeCAD, Onshape and SolidWorks exports work just as well. The loop becomes:
-**edit model → export → look/measure/check**, with the agent doing the looking.
+<sub>All images in this README come from one example project, a van roof rack. They were made by
+the tools below, unedited.</sub>
 
 ---
 
-## What it lets you do
+## The loop
 
-### 1. Look at the model, from any angle, in milliseconds
+```
+   edit the model ──▶ export STEP ──▶ agent looks / measures / checks ──▶ decide ──┐
+        ▲              (any CAD, or     render 6–30 ms · measure ~20–150 ms ·        │
+        │               code: build123d, clash < 1.5 s · reload automatic           │
+        └──────────── CadQuery, …)                                                  │
+                    ◀──────────────────────────────────────────────────────────────┘
+```
 
-Ask for several views in one call; they come back tiled in one image with view labels and a mm
-scale bar (orthographic).
+The point is iteration speed. Looking, measuring and checking are each one tool call that returns
+in milliseconds. That's fast enough for an agent to check its own work after every change:
+
+* **The model is a file.** Export from whatever you use: build123d, CadQuery, FreeCAD, Onshape,
+  SolidWorks, or KiCad (STEP of a PCB). `open` it once; every later call reloads the
+  file if it changed on disk, with stable part ids.
+* **Seeing is cheap.** `render` returns several views tiled in one image, inline in the tool
+  result, with a mm scale bar.
+* **Numbers are exact.** `inspect`, `measure` and `clash` query the real B-rep through
+  OpenCascade, so the agent works with exact dimensions.
+* **Views are repeatable.** `save_view` freezes a camera; `render {preset}` shows the next
+  iteration from exactly the same point, so differences jump out.
+* **Movement is checkable.** `motion` sweeps parts through a movement and reports the clearance at
+  every step, so a "does it fit / does it open / does it hit" question is one call.
+
+Geometry-as-code tools like [build123d](https://github.com/gumyr/build123d) and CadQuery
+(Apache-2.0, also OpenCascade-based) fit this loop especially well: the agent edits the script,
+re-runs it, and calls `render`.
+
+### How fast (Apple M4, an 18-part / 265-body assembly, 77k triangles)
+
+| Step | Time |
+|---|---|
+| `open` (read STEP, tessellate, upload to GPU) | 0.55 s |
+| `render` one 1200×900 view | 6 ms |
+| `render` four views in one image | 14 ms |
+| `render` with section / x-ray / highlight / backdrop image | 5–25 ms |
+| `inspect` (volume, mass, radii) | ~20 ms |
+| `measure` (exact minimum distance) | ~150 ms |
+| `clash` over the whole assembly | 0.4–1.3 s |
+| `motion`, 17 steps with exact clearance | ~1 s |
+| `video`, 6 s orbit at 30 fps (CAD style) | 1 s |
+| `photo` 1200×750, 32 samples | ~3 s (first run compiles kernels once, ~2 min) |
+
+---
+
+## What you can do
+
+### Look: any view, any style, in one call
 
 ![Four views](docs/gallery/01_overview.png)
 
-> *"Render iso, back-right iso, right and top."*
-> → `render {views: ["iso","iso_br","right","top"]}` (28 ms)
+```json
+render {"views": ["iso", "iso_br", "right", "top"]}
+```
 
-Views: `iso`, `iso_fl/br/bl`, `iso_below`, `front/back/left/right/top/bottom`, any `az<deg>el<deg>`,
-or an exact `dir:x,y,z`. Orthographic by default (measurable), `perspective: true` for presentation.
+* **Views:** `iso`, `iso_fl/br/bl`, `iso_below`, `front/back/left/right/top/bottom`, any
+  `az<deg>el<deg>`, or an exact `dir:x,y,z`. Orthographic (measurable, scale bar) by default;
+  `perspective: true` for presentation.
+* **Focus:** `show`, `hide`, `highlight` (everything else ghosted), `ghost`, `focus` (frame these
+  parts), `region` (frame an mm box for a close-up), `zoom`.
+* **Style:** `shaded`, `xray`, `lines` (clean drawings), `edges: all/sharp/none`, part `colors`
+  or `color_by: part`, `part_labels` with a legend.
+* **Sections:** `section {axis|normal, offset}`. The half facing the camera is removed, so the cut
+  faces always show.
+* **Backgrounds:** a colour, transparent, or `background_image` (put the model on a photo).
 
-### 2. Focus on what matters
-
-Highlight parts (everything else becomes a faint ghost), label parts, x-ray, line drawings,
-close-ups of a region, sections that show the cut faces.
-
-| Highlight + part labels | X-ray, perspective |
+| Highlight + labels | X-ray, perspective |
 |---|---|
 | ![](docs/gallery/02_bars_highlighted.png) | ![](docs/gallery/05_xray_front.png) |
 
-| Section through a bar seat: plate, bar, T-nut | Close-up of a 6 × 13 cm region (R25 corner) |
+| Section: how one part seats on another | Close-up of a small region |
 |---|---|
 | ![](docs/gallery/03_section_bar_seat.png) | ![](docs/gallery/04_rear_corner_r25.png) |
 
-![Line drawing of the side plate](docs/gallery/06_side_plate_drawing.png)
-*`style: "lines", edges: "sharp"`: a clean drawing of the laser-cut side plate, ready for a measure sheet.*
+![Line drawing](docs/gallery/06_side_plate_drawing.png)
+<sub>`style: "lines", edges: "sharp"`: a laser-cut part as a clean drawing.</sub>
 
-![Section through the spare wheel](docs/gallery/07_wheel_section.png)
-*`section {axis: "x", offset: 0}`: the spare wheel cut in half on the bars.*
+### Measure: exact numbers from the B-rep
 
-### 3. Get numbers, never guess from pixels
-
-* **`inspect`**: exact volume, area, mass (`density`), centroid, bounding box, topology, face
-  types, and every **cylinder radius** (bend radii, holes) with face counts and areas. That's how we
-  check sheet-metal bend radii before a quote.
+* **`inspect`**: volume, area, mass (`density`), centroid, bounding box, topology, face types,
+  and every **cylinder and torus radius** with face counts, e.g. sheet-metal bend radii and hole
+  sizes.
 * **`measure`**: exact minimum distance between two parts, with the closest points.
-* **`clash`**: boolean interference volume for every pair whose boxes overlap, plus touching pairs.
-  It's robust: fuzzy booleans, a retry ladder, and a point-classification fallback when OCCT's
-  boolean silently returns nothing.
+* **`clash`**: interference volume for every overlapping pair, optionally the touching pairs. It
+  uses fuzzy booleans, a retry ladder and point classification to confirm every contact.
 
-![T-nut clash](docs/gallery/10_tnut_clash.png)
-*A clash found by `clash`: the T-nut block sits half inside the bar's slot (352 mm³). Here it's a modelling simplification, but now you know.*
+![Clash close-up](docs/gallery/10_tnut_clash.png)
+<sub>A 352 mm³ interference found by `clash`, shown with `highlight` + `xray` on a `region`.</sub>
 
-### 4. Move things and sweep motions
+### Move: poses and motions
 
-* **`move`** places parts (translate / rotate about any axis). Renders, measurements and clash
-  checks then use the moved positions. Save poses by name and re-apply them later.
-* **`motion`** sweeps parts through a movement in N steps. At every step it reports the exact
-  clearance to nearby parts and any interference, and the first contact, plus a contact sheet from
-  a fixed camera. Motions can be saved and re-run.
+* **`move`**: translate or rotate parts about any axis. Renders, measurements and clash checks use
+  the moved positions. Save a pose by name and re-apply it later.
+* **`motion`**: sweep parts through a movement in N steps. Each step reports the exact clearance to
+  nearby parts and any interference, then the first contact, with a contact sheet from a fixed
+  camera. Save it and re-run it after every model change.
 
-![Wheel tip motion](docs/gallery/11_wheel_tip_motion.png)
-*"Can we tip the spare wheel up against the front?" It clears the bars (2.6 → 26 mm), then hits the
-front plate at ~75°. Found in 1 s.*
+![Motion contact sheet](docs/gallery/11_wheel_tip_motion.png)
+<sub>"Can this part tip up?" It clears the bars (2.6 → 26 mm) and first hits the front plate at
+~75°, found in about a second.</sub>
 
-![wheel tip gif](docs/gallery/wheel_tip_up.gif)
+### Compare: frozen views
 
-### 5. Repeatable points of view
+`save_view` stores the last render (all options plus the exact camera) in `.cad-render.json` next
+to the model; `render {preset: "name"}` reproduces it pixel-for-pixel in any later session, even
+after the model changed.
 
-`save_view` stores the last render, including the **exact camera**, in `.cad-render.json` next to
-your model. `render {preset: "lamps"}` reproduces it pixel-for-pixel in any later session, even
-after the model changed. That makes before/after comparisons trivial:
-
-| `lamps` view | Same frozen view, front plate + lamps moved up 40 mm |
+| Saved view | Same frozen view, after moving parts 40 mm up |
 |---|---|
 | ![](docs/gallery/08_lamps.png) | ![](docs/gallery/09_lamps_up40.png) |
 
-### 6. Present it: photos and videos
+### Present: photos and videos
 
-* **`photo`**: path tracing with [Cycles](https://www.cycles-renderer.org) on the GPU (Metal).
-  * physical materials (aluminium, brushed aluminium, zinc, steel, stainless, anodised, powder coat,
-    rubber, plastic, chrome or any paint), guessed from CAD colours by default;
-  * lighting: `studio`, `sky`, or any HDRI file;
-  * a floor with soft shadows, filmic tone mapping, denoising.
-* **Background images**: put the model on a photo (`background_image`). Its real shadow is measured
-  and multiplied onto the photo, so it sits *in* the scene. Works for `render` too.
-* **`video`**: record a saved/inline motion and/or an **orbit swoop** as MP4 (hardware H.264 via
-  AVFoundation) or GIF.
-  * `fast` frames take ~2 ms and have the exact clearance burned into every frame;
+* **`photo`** path traces with [Cycles](https://www.cycles-renderer.org) on the GPU (Metal):
+  * physical materials (aluminium, brushed aluminium, zinc, steel, stainless, anodised, powder
+    coat, rubber, plastic, chrome, or any paint), guessed from the CAD colours by default;
+  * environments: `studio`, `sky`, or any HDRI;
+  * a floor with soft shadows, filmic tone mapping and denoising.
+* **On a photo:** `background_image` composites the model over your picture, and its shadow is
+  measured and applied to the picture, so it sits *in* the scene.
+* **`video`** records a motion and/or an orbit swoop to MP4 (hardware H.264 via AVFoundation) or
+  GIF:
+  * `fast` frames take about 2 ms each and carry the exact clearance burned in;
   * `photo` frames come from Cycles.
 
-| Studio close-up (`photo`, 128 samples, 10 s) | On a backdrop photo, sun from the side, shadow composited |
+| Studio close-up | On a backdrop, with its shadow |
 |---|---|
 | ![](docs/gallery/13_photo_closeup.png) | ![](docs/gallery/14_photo_backdrop.png) |
 
+![Motion as a GIF](docs/gallery/wheel_tip_up.gif)
+
 ---
 
-## How we use it (a typical session)
-
-Condensed from the real roof-rack session (part names shortened, numbers as measured):
+## A session, condensed
 
 ```text
-you:    Open the rack export and show it from all sides.
-claude: open {paths: ["export/rack.step"], split_solids: true}
-        render {views: ["iso","front","right","top"]}                 → 4 views, 28 ms
+you:    Open the export and show it from all sides.
+agent:  open {paths: ["out/assembly.step"], split_solids: true}
+        render {views: ["iso", "front", "right", "top"]}
 
-you:    Does the wheel clear the front plate if we tip it up?
-claude: motion {parts: ["WHEEL"], rotate: {axis: "x", deg: -85, origin: [0, 2018, 189]},
-                steps: 17, save_as: "wheel_tip_up"}
-        → clears the bars, first interference with FRONT_PLATE at step 15 (~75°)
+you:    Is anything colliding?
+agent:  clash {touching: true}                   → one real overlap: BOLT vs PLATE_L, 439.8 mm³
 
-you:    Lower the front plate 40 mm and show me the lamp mounts like before.
-claude: move {parts: ["FRONT_*", "LAMP*"], translate: [0, 0, -40], save_pose: "fp_down40"}
-        render {preset: "lamps"}                                      → identical camera
-        measure {a: "FRONT_PLATE:1", b: "BAR_ISB_40x80 (5):8"}         → 4.000 mm
+you:    Show me that spot, and save the view.
+agent:  render {region: [...], highlight: ["BOLT", "PLATE_L"], style: "xray"}
+        save_view {name: "bolt"}
 
-you:    Check every bend radius on the side plate before we send it to the laser cutter.
-claude: inspect {parts: ["PLATE_L"], density: 2.66}                   → R4 ×12, R5 ×18 … 6.48 kg
+        … you change the hole size and re-export; the next call picks it up …
 
-(the model script changes, you re-export; nothing to reload: the next call picks it up)
+agent:  render {preset: "bolt"}                  → same camera, new geometry
+        clash {parts: ["BOLT", "PLATE_L"]}       → clear
+        inspect {parts: ["PLATE_L"]}             → hole radius 8.5 mm
 
-you:    Make a nice picture and a fly-around for the sales page.
-claude: photo {views: ["az-145el24"], materials: {"FEET_HW*": "zinc", "WHEEL": "rubber"}}
+you:    Does the lid open fully?
+agent:  motion {parts: ["LID"], rotate: {axis: "x", deg: -110, origin: [0, 0, 120]}, steps: 22}
+        → first contact at step 19 (95°) with HINGE_STOP
+
+you:    Make a picture and a turntable for the docs.
+agent:  photo {views: ["az-35el25"], materials: {"LID": "anodised_black"}}
         video {orbit: {}, renderer: "photo", seconds: 5}
 ```
 
-Everything above is a plain MCP tool call. The images come back inline, so the agent sees them
-immediately, and so do you in clients that render MCP images.
+Every line is a single MCP tool call. Images come back inline, so the agent sees them immediately,
+and so do you in clients that display MCP images. The clash numbers come from the bundled demo
+model (`examples/demo_rack.step`); the rest is illustrative.
 
 ---
 
@@ -175,37 +199,34 @@ immediately, and so do you in clients that render MCP images.
 Requirements: macOS on Apple Silicon (Metal), [Homebrew](https://brew.sh), Rust.
 
 ```sh
-brew install rust opencascade                 # OCCT 7.9 (LGPL-2.1, used as shared libraries)
+brew install rust opencascade            # OpenCascade 7.9, used as shared libraries (LGPL-2.1)
 git clone https://github.com/Willianvdv/cad-render-mcp && cd cad-render-mcp
-scripts/install.sh                            # builds, installs to ~/.local/bin, registers with Claude Code
+scripts/install.sh                       # build, install to ~/.local/bin, register with Claude Code
 ```
 
-`scripts/install.sh` runs `cargo install` into `~/.local`, copies Cycles (if built, see below) to
-`~/.local/share/cad-render-mcp/cycles`, and runs
-`claude mcp add --scope user cad-render -- ~/.local/bin/cad-render-mcp`. The tools are then
-available in **every** project as `mcp__cad-render__*`. Restart Claude Code (or `/mcp` → reconnect)
-afterwards. Re-run the script to update the installed copy; developing in the repo never touches it.
+`scripts/install.sh` does three things:
+1. `cargo install`s the server into `~/.local`;
+2. copies Cycles, if built, to `~/.local/share/cad-render-mcp/cycles`;
+3. runs `claude mcp add --scope user cad-render -- ~/.local/bin/cad-render-mcp`.
 
-Other MCP clients: run `~/.local/bin/cad-render-mcp` as a stdio server.
+The tools are then available in every project as `mcp__cad-render__*`; restart Claude Code (or
+`/mcp` → reconnect). Re-run the script to update. Other MCP clients can start
+`~/.local/bin/cad-render-mcp` as a stdio server.
 
-### Optional: Cycles for `photo` and photo-quality `video`
+**Optional: Cycles for `photo` and photo-quality `video`**
 
 ```sh
 brew install cmake git-lfs && git lfs install
 git clone https://projects.blender.org/blender/cycles.git ~/src/cad-render-mcp-deps/cycles
-cd ~/src/cad-render-mcp-deps/cycles && make update && make   # ~1.3 GB prebuilt libs; ~1-2 min build
-cd - && scripts/install.sh                                   # copies Cycles next to the install
+cd ~/src/cad-render-mcp-deps/cycles && make update && make   # ~1.3 GB prebuilt libraries, ~1–2 min build
+cd - && scripts/install.sh
 ```
 
-The first photo compiles Cycles' Metal kernels (~2 min, once); after that, photos take seconds.
 Lookup order: `$CAD_RENDER_CYCLES`, `cycles/` next to the binary,
 `~/.local/share/cad-render-mcp/cycles`, `~/src/cad-render-mcp-deps/cycles/install`.
 
-### Try it without your own CAD files
-
-```sh
-cad-render-mcp demo-step demo.step     # a small named, coloured assembly (also in examples/)
-```
+**Try it right away:** `cad-render-mcp demo-step demo.step` writes a small named, coloured
+assembly (also in `examples/`).
 
 ---
 
@@ -213,24 +234,23 @@ cad-render-mcp demo-step demo.step     # a small named, coloured assembly (also 
 
 | Tool | What it does |
 |---|---|
-| `open` | Load files or directories. `split_solids` gives one part per body; `deflection_mm` / `angle_deg` set tessellation; `project` sets the project file. Returns parts with ids, sizes, timings. Changed files reload on every later call. |
-| `render` | Tiled views → inline PNG. `views`, `width/height/cols`, `show/hide/highlight/ghost/focus`, `region` (mm box), `zoom`, `colors`, `color_by` (file/part/uniform), `style` (shaded/xray/lines), `edges` (all/sharp/none), `silhouettes`, `section {axis/normal, offset, remove}`, `perspective`, `up` (z/y), `background`, `background_image` + `background_fit`, `labels`, `part_labels`, `scale_bar`, `preset`, `cameras`, `save`. |
-| `photo` | Cycles still with the same viewpoint options as `render`, plus the look: `materials`, `samples`, `floor`, `environment` (studio/sky/HDRI path), `environment_strength/rotation/visible`, `background`, `background_image` (real shadow composited), `exposure`. |
-| `video` | MP4 (hardware H.264) or GIF of a motion (`run` / `motion`) and/or an `orbit {az/el/zoom from→to}` swoop. `renderer` fast/photo, `fps`, `seconds`, `pingpong`, `hold`, `annotate` (exact clearance per frame), the same look options as `photo`. Returns a contact sheet inline plus the file path. |
-| `parts` | List parts (id, assembly path, file, size, triangles). |
-| `inspect` | Exact B-rep properties: volume, area, mass, centroid, bbox, topology, face types, cylinder and torus radii. |
-| `measure` | Exact minimum distance between two parts, with closest points (respects poses). |
-| `clash` | Interference volumes for all overlapping pairs (respects poses); `touching` lists contact pairs. |
-| `move` | Translate / rotate parts (`rotate {axis, deg, origin}`), `absolute`, `reset`, apply `pose`, `save_pose`. |
-| `motion` | Sweep a translate/rotate in `steps`; per-step clearance/interference, first contact, contact sheet; `save_as` / `run`. |
-| `save_view` | Save the last render (all options + exact cameras) by name. |
+| `open` | Load files or directories. `split_solids` gives one part per body; `deflection_mm`/`angle_deg` set tessellation; `project` sets the project file. Changed files reload on every later call. |
+| `render` | Tiled views → inline PNG. `views`, `width/height/cols`, `show/hide/highlight/ghost/focus`, `region`, `zoom`, `colors`, `color_by`, `style`, `edges`, `silhouettes`, `section`, `perspective`, `up`, `background`, `background_image`/`background_fit`, `labels`, `part_labels`, `scale_bar`, `preset`, `cameras`, `save`. |
+| `photo` | Cycles still, same viewpoint options as `render`, plus `materials`, `samples`, `floor`, `environment` (studio/sky/HDRI), `environment_strength/rotation/visible`, `background`, `background_image`, `exposure`. |
+| `video` | MP4/GIF of a motion (`run`/`motion`) and/or an `orbit` swoop; `renderer` fast/photo, `fps`, `seconds`, `pingpong`, `hold`, `annotate`, plus the `photo` look options. Returns a contact sheet inline plus the file path. |
+| `parts` | List parts: id, assembly path, file, size, triangles. |
+| `inspect` | Volume, area, mass, centroid, bbox, topology, face types, cylinder/torus radii. |
+| `measure` | Exact minimum distance between two parts, with the closest points. |
+| `clash` | Interference volume for every overlapping pair; `touching` adds contact pairs. |
+| `move` | Translate/rotate parts, `reset`, apply or `save_pose`. |
+| `motion` | Sweep a translate/rotate in `steps`; clearance and interference per step, first contact, contact sheet; `save_as`/`run`. |
+| `save_view` | Save the last render with its exact cameras. |
 | `saved` | List or delete saved views, poses and motions. |
 | `close` | Unload everything. |
 
-**Part selectors** accept an id (`p12`), an exact name or assembly path (`PLATE_L:1`), a glob
-(`BAR_*`), or a substring. **Units** are mm; **named views** assume Z up with `front` looking
-along +Y. **Saved views, poses and motions** live in `.cad-render.json` next to the first opened
-file, so you can commit them with the model.
+* **Part selectors:** an id (`p12`), an exact name or assembly path, a glob (`BAR_*`), or a
+  substring.
+* **Conventions:** units are mm, Z is up, `front` looks along +Y; `up: "y"` handles Y-up models.
 
 ---
 
@@ -238,54 +258,38 @@ file, so you can commit them with the model.
 
 ```
 STEP/IGES/BREP ─▶ OpenCascade XCAF reader (names, colours, assembly tree)
-               ─▶ BRepMesh (parallel) → triangles + normals, B-rep edges (seams dropped,
-                  tangent edges flagged), silhouette candidates
-               ─▶ GPU buffers (kept resident)          (exact B-rep stays in memory for queries)
-
-render ─▶ wgpu on Metal: one 4× MSAA pass draws every tile
-          faces (lit) → feature edges (screen-space quads) → silhouettes (decided per view in the
-          vertex shader) → ghosts; sections clip in the fragment shader, back faces = cut caps
-       ─▶ one readback → labels/scale bar → PNG → base64, inline in the MCP result
-
-inspect/measure/clash/motion ─▶ OCCT: GProp, BRepExtrema, non-destructive fuzzy booleans;
-                                 motion steps run in parallel on all cores
-
-photo/video(photo) ─▶ scene → Cycles standalone (separate process, Metal) → EXR → filmic tone map
-video ─▶ AVFoundation/VideoToolbox H.264, or GIF
+               ─▶ BRepMesh (parallel): triangles + normals, B-rep edges (seams dropped,
+                  tangent edges flagged), silhouette candidates   ─▶ GPU buffers (resident)
+                                                                     exact B-rep kept for queries
+render  ─▶ wgpu on Metal: one 4× MSAA pass draws all tiles: lit faces, screen-space edges,
+           per-view silhouettes (vertex shader), ghosts, section caps ─▶ one readback ─▶ PNG inline
+inspect / measure / clash / motion ─▶ OpenCascade (GProp, BRepExtrema, non-destructive fuzzy
+           booleans); motion steps run in parallel on all cores
+photo   ─▶ Cycles standalone (separate process, Metal) ─▶ EXR ─▶ filmic tone map (+ backdrop/shadow)
+video   ─▶ AVFoundation / VideoToolbox H.264, or GIF
 ```
 
-* **Rust** + the official MCP SDK (`rmcp`), stdio transport only. stdout is the protocol, so at
-  startup the server moves it to a private fd and points fd 1 at stderr: stray prints from native
-  libraries can't corrupt it.
+* **Rust** with the official MCP SDK (`rmcp`) over stdio.
+* **stdout is the protocol.** At startup the server moves it to a private fd and points fd 1 at
+  stderr, which keeps the protocol stream clean.
 * **OpenCascade 7.9** through a small C++ shim (`cpp/occt_shim.cpp`), linked dynamically.
-* All work runs off the async runtime; one scene, one GPU device, resident meshes.
+* **One scene, one GPU device.** Meshes stay resident between calls. The geometry tools also run on
+  CPU-only machines.
 
 ## Development
 
 ```sh
-cargo build --release
-cargo test --release                       # unit tests
-python3 tests/e2e_demo.py                  # every tool over real MCP stdio, on examples/demo_rack.step
-python3 tests/e2e_roofrack.py              # the original roof-rack suite (needs private testdata/)
+cargo build --release && cargo test --release
+python3 tests/e2e_demo.py              # every tool over real MCP stdio, on examples/demo_rack.step
+python3 tests/drive.py calls.json out/ # replay a JSON list of tool calls and save the images
 cargo run --release -- bench examples/demo_rack.step -o /tmp/bench.png
-python3 tests/drive.py calls.json out/     # replay a JSON list of tool calls, save the images
 ```
 
-CI (GitHub Actions, macOS arm64) runs fmt, clippy `-D warnings`, the unit tests and the demo
-end-to-end suite. GPU checks skip automatically when the runner has no Metal device.
-
-The gallery above is generated by `python3 tests/drive.py scripts/gallery_roofrack.json docs/gallery`
-(it needs the private roof-rack export in `testdata/`).
+CI (GitHub Actions, macOS arm64) runs fmt, clippy `-D warnings`, the unit tests and the end-to-end
+suite. `tests/e2e_roofrack.py` and `scripts/gallery_roofrack.json` (which produced the images above)
+need the example project's private STEP files in `testdata/` and skip otherwise.
 
 ## Licence
 
 MIT OR Apache-2.0, at your option. OpenCascade (LGPL-2.1 + Open CASCADE exception) is used as
-shared libraries; Cycles (Apache-2.0) runs as a separate process. See [NOTICE.md](NOTICE.md) for what
-binary distributions must include.
-
-## Roadmap
-
-* STL/OBJ/glTF input (mesh references such as a scanned van roof for clearance checks)
-* keep one Cycles process alive across video frames (today each frame restarts it)
-* bundle Cycles in release archives; Linux/Vulkan support (wgpu already supports it)
-* face/edge picking and per-face highlights; 2D section profiles with dimensions
+shared libraries; Cycles (Apache-2.0) runs as a separate process. See [NOTICE.md](NOTICE.md).

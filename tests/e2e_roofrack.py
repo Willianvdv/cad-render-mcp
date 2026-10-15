@@ -2,7 +2,7 @@
 """Private end-to-end test against the original roof-rack STEP files (testdata/, not published).
 Skips when the fixtures are absent; the public suite is tests/e2e_demo.py.
 
-Replays the kind of calls the roof-rack session made against Fusion (open, multi-view renders,
+Exercises the tools on a real 18-part / 265-body assembly (open, multi-view renders,
 section, highlight, inspect bend radii, measure clearance, clash check, reload after a file
 change) and checks every response.
 
@@ -108,11 +108,11 @@ def main():
     check({"open", "render", "parts", "inspect", "measure", "clash", "close"} <= set(tools), "all tools listed")
     check("views" in json.dumps(tools["render"]["inputSchema"]), "render schema documents views")
 
-    # 1. open the full assembly (Fusion: documents.open, often > 60 s timeout)
+    # 1. open the full assembly
     r, t, _ = step(c, "open assembly", "open", {"paths": [ASM]})
     check("18 parts" in t, "assembly has 18 parts")
 
-    # 2. the multi-view check we did one screenshot at a time in Fusion
+    # 2. multi-view check
     r, t, img = step(c, "four views", "render", {"views": ["iso", "front", "right", "top"]}, True)
     check(img and png_size(img[0]) == (1600, 1200), "4 tiles of 800x600 -> 1600x1200")
 
@@ -134,18 +134,18 @@ def main():
     r, t, img = step(c, "lines top", "render", {"views": ["top"], "style": "lines", "edges": "sharp", "save": os.path.join(OUT, "saved_lines_top.png")}, True)
     check(os.path.exists(os.path.join(OUT, "saved_lines_top.png")), "save path written")
 
-    # 8. inspect: bend radii, volume, mass (Fusion: face loops in scripts)
+    # 8. inspect: bend radii, volume, mass
     r, t, _ = step(c, "inspect plate", "inspect", {"parts": ["PLATE_L:1"], "density": 2.66})
     data = json.loads(t.split("\nno part")[0])
     check(abs(data[0]["volume_mm3"] - 2.43e6) / 2.43e6 < 0.02, f"PLATE_L volume ~2.43e6 mm³ (got {data[0]['volume_mm3']:.0f})")
     check(any(abs(x["r"] - 5.0) < 1e-6 for x in data[0]["cylinder_radii"]), "R5 bend radius found")
     check(6.0 < data[0]["mass_kg"] < 7.0, f"mass {data[0]['mass_kg']} kg in 6..7")
 
-    # 9. measure (Fusion: measureMinimumDistance)
+    # 9. measure
     r, t, _ = step(c, "measure bars", "measure", {"a": "BAR_ISB_40x80 (5):1", "b": "BAR_ISB_40x80 (5):2"})
     check("min distance" in t, "distance reported")
 
-    # 10. clash (Fusion: TemporaryBRep intersections, ~15 s each)
+    # 10. clash
     r, t, _ = step(c, "clash all", "clash", {})
     check("pairs" in t, "clash summary")
 
