@@ -25,6 +25,8 @@ pub struct App {
     pub project_path: Option<std::path::PathBuf>,
     /// Parameters and resolved cameras of the last render (for `save_view`).
     pub last_render: Option<(serde_json::Value, Vec<CamSpec>)>,
+    /// Decoded background images by path (reloaded when the file changes).
+    pub images: std::collections::HashMap<std::path::PathBuf, (Option<std::time::SystemTime>, Arc<crate::video::Frame>)>,
 }
 
 impl App {
@@ -33,7 +35,21 @@ impl App {
             Ok(r) => (Some(r), None),
             Err(e) => (None, Some(format!("GPU init failed: {e:#}"))),
         };
-        App { renderer, renderer_err, scene: Scene::new(), project: Project::default(), project_path: None, last_render: None }
+        App { renderer, renderer_err, scene: Scene::new(), project: Project::default(), project_path: None, last_render: None, images: Default::default() }
+    }
+
+    /// Load (or reuse) a background image.
+    pub fn image(&mut self, path: &str) -> anyhow::Result<Arc<crate::video::Frame>> {
+        let p = std::path::PathBuf::from(scene::shellexpand(path));
+        let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
+        if let Some((t, f)) = self.images.get(&p)
+            && *t == mtime
+        {
+            return Ok(f.clone());
+        }
+        let f = Arc::new(crate::video::load_image(&p)?);
+        self.images.insert(p, (mtime, f.clone()));
+        Ok(f)
     }
 
     fn save_project(&self) -> anyhow::Result<String> {
@@ -51,7 +67,7 @@ impl App {
 }
 
 #[derive(Clone)]
-pub struct Shapeshot {
+pub struct CadRender {
     app: Arc<Mutex<App>>,
     tool_router: ToolRouter<Self>,
 }
@@ -71,7 +87,7 @@ pub struct OpenParams {
     /// Split components that hold several solids into one part per solid ("name#k"), so
     /// render/clash/inspect work per body (default false: one part per component).
     pub split_solids: Option<bool>,
-    /// Project file for saved views/poses/motions (default: .shapeshot.json next to the first file).
+    /// Project file for saved views/poses/motions (default: .cad-render.json next to the first file).
     pub project: Option<String>,
 }
 
@@ -139,6 +155,10 @@ pub struct RenderParams {
     pub up: Option<String>,
     /// "#rrggbb" or "transparent" (default "#f4f5f7").
     pub background: Option<String>,
+    /// Backdrop image (PNG/JPEG path) behind the model in every tile.
+    pub background_image: Option<String>,
+    /// How the backdrop fills a tile: "cover" (crop, default) or "contain" (letterbox on `background`).
+    pub background_fit: Option<String>,
     /// View name label in each tile (default true).
     pub labels: Option<bool>,
     /// Part id/name labels at part centres (default false).
@@ -246,6 +266,36 @@ pub struct MotionParams {
     pub note: Option<String>,
 }
 
+/// Photo-realistic look, shared by `photo` and `video {renderer: "photo"}`.
+#[derive(Serialize, Deserialize, JsonSchema, Clone, Default)]
+pub struct Look {
+    /// Materials: selector -> preset (aluminium, brushed_aluminium, anodised_black, steel, stainless,
+    /// zinc, black_powdercoat, rubber, plastic, chrome) or "#rrggbb" paint. Default: guessed from the CAD colour.
+    pub materials: Option<BTreeMap<String, String>>,
+    /// Path-tracing samples (default 64 for photo, 16 for video; denoised).
+    pub samples: Option<u32>,
+    /// Ground plane with soft shadows (default true; becomes a shadow catcher over a background image).
+    pub floor: Option<bool>,
+    /// Lighting: "studio" (default: soft environment, key sun, softbox), "sky" (daylight sky + sun),
+    /// or a path to an equirectangular HDRI (.hdr/.exr) that lights the model and shows in reflections.
+    pub environment: Option<String>,
+    /// Lighting strength multiplier (default 1).
+    pub environment_strength: Option<f32>,
+    /// Rotate the environment / sun around the vertical axis, degrees.
+    pub environment_rotation: Option<f32>,
+    /// Show the environment behind the model (default true; false = plain `background` colour).
+    pub environment_visible: Option<bool>,
+    /// Background colour "#rrggbb" (studio environment tint, or behind the model when the
+    /// environment is hidden; default light studio grey).
+    pub background: Option<String>,
+    /// Backdrop photo (PNG/JPEG) behind the model; the model's shadows land on it.
+    pub background_image: Option<String>,
+    /// "cover" (crop to fill, default) or "contain" (letterbox).
+    pub background_fit: Option<String>,
+    /// Exposure in stops (default 0; +1 = twice as bright).
+    pub exposure: Option<f32>,
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct PhotoParams {
     /// Saved view to photograph (its frozen camera is reused unless you reframe).
@@ -268,20 +318,12 @@ pub struct PhotoParams {
     pub show: Option<Vec<String>>,
     /// Hide these parts.
     pub hide: Option<Vec<String>>,
-    /// Materials: selector -> preset (aluminium, brushed_aluminium, anodised_black, steel, stainless,
-    /// zinc, black_powdercoat, rubber, plastic, chrome) or "#rrggbb" paint. Default: guessed from the CAD colour.
-    pub materials: Option<BTreeMap<String, String>>,
+    /// Look: materials, lighting, background (shared with `video`).
+    #[serde(flatten)]
+    pub look: Look,
     /// Image size in px (default 1600 x 1000).
     pub width: Option<u32>,
     pub height: Option<u32>,
-    /// Path-tracing samples (default 64, denoised).
-    pub samples: Option<u32>,
-    /// Ground plane with soft shadows (default true).
-    pub floor: Option<bool>,
-    /// Environment colour "#rrggbb" (default light studio grey).
-    pub background: Option<String>,
-    /// Exposure in stops (default 0; +1 = twice as bright).
-    pub exposure: Option<f32>,
     /// Seconds before giving up (default 180; the first run compiles Metal kernels).
     pub timeout_s: Option<u64>,
     /// Also write the PNG to this path.
@@ -331,11 +373,10 @@ pub struct VideoParams {
     pub render: Option<RenderParams>,
     /// Burn the exact clearance / interference of each frame into the image (default true).
     pub annotate: Option<bool>,
-    /// photo renderer: materials, samples (default 16), floor, exposure.
-    pub materials: Option<BTreeMap<String, String>>,
-    pub samples: Option<u32>,
-    pub floor: Option<bool>,
-    pub exposure: Option<f32>,
+    /// Look for the photo renderer (materials, environment, background image...); the fast renderer
+    /// takes its look from `render`.
+    #[serde(flatten)]
+    pub look: Look,
     /// "mp4" (H.264 via AVFoundation, default) or "gif".
     pub format: Option<String>,
     /// Output path (default: videos/<motion>.<ext> next to the project file).
@@ -437,7 +478,7 @@ fn dims(lo: Vec3, hi: Vec3) -> String {
     format!("{:.1} x {:.1} x {:.1}", d.x, d.y, d.z)
 }
 
-impl Shapeshot {
+impl CadRender {
     pub fn new(app: App) -> Self {
         Self { app: Arc::new(Mutex::new(app)), tool_router: Self::tool_router() }
     }
@@ -559,6 +600,12 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
     let (p_owned, preset_cams, preset_note) = resolve_preset(app, p_in)?;
     notes.extend(preset_note);
     let p = &p_owned;
+    let backplate = match &p.background_image {
+        Some(path) => Some(app.image(path)?),
+        None => None,
+    };
+    let fit_mode = p.background_fit.clone().unwrap_or_else(|| "cover".into());
+    anyhow::ensure!(fit_mode == "cover" || fit_mode == "contain", "background_fit must be cover or contain");
     let sc = &app.scene;
     let up = Up::parse(p.up.as_deref())?;
     let view_specs = p.views.clone().unwrap_or_else(|| vec!["iso".into()]);
@@ -710,6 +757,7 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
         xray: style == "xray",
         unlit: style == "lines",
         raw: frames.as_ref().is_some_and(|f| f.raw),
+        backplate: backplate.as_deref().map(|f| (f, fit_mode.clone())),
         poses: match &frames {
             Some(f) => f.poses.clone(),
             None => vec![sc.parts.iter().map(|p| p.pose).collect()],
@@ -1193,6 +1241,33 @@ fn resolve_materials(sc: &Scene, spec: &Option<BTreeMap<String, String>>, notes:
     Ok(materials)
 }
 
+fn lighting(app: &mut App, look: &Look) -> anyhow::Result<photo::Lighting> {
+    let env = match look.environment.as_deref().unwrap_or("studio") {
+        "studio" => photo::Env::Studio,
+        "sky" => photo::Env::Sky,
+        path => photo::Env::File(std::path::PathBuf::from(scene::shellexpand(path))),
+    };
+    let fit = look.background_fit.clone().unwrap_or_else(|| "cover".into());
+    anyhow::ensure!(fit == "cover" || fit == "contain", "background_fit must be cover or contain");
+    let backplate = match &look.background_image {
+        Some(p) => Some((app.image(p)?, fit)),
+        None => None,
+    };
+    Ok(photo::Lighting {
+        env,
+        strength: look.environment_strength.unwrap_or(1.0).max(0.0),
+        rotation_deg: look.environment_rotation.unwrap_or(0.0),
+        env_visible: look.environment_visible.unwrap_or(true),
+        background: match &look.background {
+            Some(h) => parse_hex(h)?,
+            None => [0.92, 0.93, 0.95],
+        },
+        backplate,
+        floor: look.floor.unwrap_or(true),
+        exposure: look.exposure.unwrap_or(0.0),
+    })
+}
+
 pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, String)> {
     let t0 = Instant::now();
     let (w, h) = (p.width.unwrap_or(1600).clamp(64, 8192), p.height.unwrap_or(1000).clamp(64, 8192));
@@ -1218,14 +1293,11 @@ pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, Stri
     };
     let resolved = do_render(app, &rp)?;
     let cam = *resolved.cams.first().ok_or_else(|| anyhow::anyhow!("no camera"))?;
+    let light = lighting(app, &p.look)?;
     let sc = &app.scene;
     let mut notes = Vec::new();
-    let materials = resolve_materials(sc, &p.materials, &mut notes)?;
-    let bg = match &p.background {
-        Some(h) => parse_hex(h)?,
-        None => [0.92, 0.93, 0.95],
-    };
-    let work_dir = std::env::temp_dir().join(format!("shapeshot-photo-{}", std::process::id()));
+    let materials = resolve_materials(sc, &p.look.materials, &mut notes)?;
+    let work_dir = std::env::temp_dir().join(format!("cad-render-photo-{}", std::process::id()));
     let out = photo::photo(&photo::PhotoReq {
         scene: sc,
         cam,
@@ -1234,11 +1306,9 @@ pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, Stri
         styles: &resolved.styles,
         poses: &resolved.poses,
         materials,
-        samples: p.samples.unwrap_or(64).clamp(1, 4096),
-        floor: p.floor.unwrap_or(true),
-        background: bg,
+        samples: p.look.samples.unwrap_or(64).clamp(1, 4096),
+        light: &light,
         timeout: std::time::Duration::from_secs(p.timeout_s.unwrap_or(180)),
-        exposure: p.exposure.unwrap_or(0.0),
         work_dir,
     })?;
     if let Some(path) = &p.save {
@@ -1247,7 +1317,7 @@ pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, Stri
     }
     let mut text = format!(
         "{w}x{h} px path-traced (Cycles, Metal), {} samples, {} tris; {:.1} s total (scene export {:.0} ms, render {:.1} s), {} KB",
-        p.samples.unwrap_or(64),
+        p.look.samples.unwrap_or(64),
         out.tris,
         t0.elapsed().as_secs_f64(),
         out.export_ms,
@@ -1370,8 +1440,9 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
         rp.labels = Some(false);
         rp.scale_bar = Some(false);
         let resolved = do_render_frames(app, &rp, Some(Frames { poses: vec![poses[0].clone()], labels: vec![String::new()], raw: true }))?;
-        let materials = resolve_materials(&app.scene, &p.materials, &mut notes)?;
-        let work_dir = std::env::temp_dir().join(format!("shapeshot-video-{}", std::process::id()));
+        let materials = resolve_materials(&app.scene, &p.look.materials, &mut notes)?;
+        let light = lighting(app, &p.look)?;
+        let work_dir = std::env::temp_dir().join(format!("cad-render-video-{}", std::process::id()));
         for (k, pose) in poses.iter().enumerate() {
             let out = photo::photo(&photo::PhotoReq {
                 scene: &app.scene,
@@ -1381,15 +1452,13 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
                 styles: &resolved.styles,
                 poses: pose,
                 materials: materials.clone(),
-                samples: p.samples.unwrap_or(16).clamp(1, 4096),
-                floor: p.floor.unwrap_or(true),
-                background: [0.92, 0.93, 0.95],
+                samples: p.look.samples.unwrap_or(16).clamp(1, 4096),
+                light: &light,
                 timeout: std::time::Duration::from_secs(600),
-                exposure: p.exposure.unwrap_or(0.0),
                 work_dir: work_dir.clone(),
             })?;
             let mut f = out.frame;
-            if annotate {
+            if checks.is_some() {
                 let mut cv = crate::font::Canvas { px: &mut f.rgba, w: f.w, h: f.h };
                 cv.label(12, 10, &label(k), 2, [40, 44, 52, 255], [255, 255, 255, 190]);
             }
@@ -1481,7 +1550,7 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
 // ---------- tools ----------
 
 #[tool_router]
-impl Shapeshot {
+impl CadRender {
     #[tool(description = "Load STEP/BREP/IGES files (or directories of them) into the scene. Returns parts with ids, sizes and timings. Loaded files auto-reload when they change on disk.")]
     async fn open(&self, Parameters(p): Parameters<OpenParams>) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| Ok(CallToolResult::success(vec![ContentBlock::text(do_open(app, &p)?)]))).await
@@ -1666,13 +1735,13 @@ impl Shapeshot {
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for Shapeshot {
+impl ServerHandler for CadRender {
     fn get_info(&self) -> ServerConfig {
         let gpu = self.app.lock().map(|a| a.renderer.as_ref().map(|r| r.adapter_name.clone()).unwrap_or_else(|| "none".into())).unwrap_or_default();
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("shapeshot", env!("CARGO_PKG_VERSION")))
+            .with_server_info(Implementation::new("cad-render-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(format!(
-                "shapeshot renders CAD files (STEP/BREP/IGES via OpenCascade {}) on the GPU ({gpu}) and answers exact geometry questions. \
+                "cad-render-mcp renders CAD files (STEP/BREP/IGES via OpenCascade {}) on the GPU ({gpu}) and answers exact geometry questions. \
                  Workflow: `open` files once; edit the source model and re-export; every call reloads changed files automatically. \
                  `render` returns the image inline: ask for several views in one call (e.g. [\"iso\",\"front\",\"right\",\"top\"]) instead of several calls. \
                  Orthographic views carry a scale bar. Units are mm. Use `inspect`, `measure` and `clash` for numbers instead of judging from pixels.",
@@ -1683,6 +1752,6 @@ impl ServerHandler for Shapeshot {
 
 mod log {
     pub fn info(s: &str) {
-        eprintln!("[shapeshot] {s}");
+        eprintln!("[cad-render] {s}");
     }
 }

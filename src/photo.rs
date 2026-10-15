@@ -10,12 +10,12 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// Locate the Cycles standalone binary: $SHAPESHOT_CYCLES, next to our executable, or the
-/// developer build in ~/src/shapeshot-deps/cycles/install.
+/// Locate the Cycles standalone binary: $CAD_RENDER_CYCLES, next to our executable, or the
+/// developer build in ~/src/cad-render-mcp-deps/cycles/install.
 pub fn cycles_binary() -> anyhow::Result<PathBuf> {
     let mut tried = Vec::new();
     let mut cands: Vec<PathBuf> = Vec::new();
-    if let Ok(p) = std::env::var("SHAPESHOT_CYCLES") {
+    if let Ok(p) = std::env::var("CAD_RENDER_CYCLES") {
         cands.push(p.into());
     }
     if let Ok(exe) = std::env::current_exe()
@@ -24,7 +24,7 @@ pub fn cycles_binary() -> anyhow::Result<PathBuf> {
         cands.push(dir.join("cycles/cycles"));
     }
     if let Ok(h) = std::env::var("HOME") {
-        cands.push(PathBuf::from(h).join("src/shapeshot-deps/cycles/install/cycles"));
+        cands.push(PathBuf::from(h).join("src/cad-render-mcp-deps/cycles/install/cycles"));
     }
     for c in cands {
         if c.is_file() {
@@ -32,7 +32,7 @@ pub fn cycles_binary() -> anyhow::Result<PathBuf> {
         }
         tried.push(c.display().to_string());
     }
-    anyhow::bail!("Cycles not found (tried {}); build it (see README) or set SHAPESHOT_CYCLES", tried.join(", "))
+    anyhow::bail!("Cycles not found (tried {}); build it (see README) or set CAD_RENDER_CYCLES", tried.join(", "))
 }
 
 /// Physical material for a part.
@@ -75,6 +75,31 @@ pub fn auto_material(c: [f32; 3]) -> Material {
     }
 }
 
+/// World lighting for a photo.
+#[derive(Clone)]
+pub enum Env {
+    /// Soft even environment + key sun + softbox (product-shot look).
+    Studio,
+    /// Physical daylight sky (Hosek-Wilkie) with a matching sun.
+    Sky,
+    /// Equirectangular HDRI (.hdr/.exr/...): lights the model and shows in reflections.
+    File(PathBuf),
+}
+
+#[derive(Clone)]
+pub struct Lighting {
+    pub env: Env,
+    pub strength: f32,
+    pub rotation_deg: f32,
+    /// Show the environment behind the model (else `background` colour or the backdrop image).
+    pub env_visible: bool,
+    pub background: [f32; 3],
+    /// Backdrop photo + fit mode; the floor becomes a shadow catcher so shadows land on it.
+    pub backplate: Option<(std::sync::Arc<crate::video::Frame>, String)>,
+    pub floor: bool,
+    pub exposure: f32,
+}
+
 pub struct PhotoReq<'a> {
     pub scene: &'a Scene,
     pub cam: CamSpec,
@@ -84,11 +109,8 @@ pub struct PhotoReq<'a> {
     pub poses: &'a [Mat4],
     pub materials: Vec<Material>,
     pub samples: u32,
-    pub floor: bool,
-    pub background: [f32; 3],
+    pub light: &'a Lighting,
     pub timeout: Duration,
-    /// Exposure in stops (0 = neutral).
-    pub exposure: f32,
     /// Directory for the scene file and output.
     pub work_dir: PathBuf,
 }
@@ -101,6 +123,10 @@ pub struct PhotoOut {
     pub tris: usize,
 }
 
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
+}
+
 fn fmt3(s: &mut String, v: [f32; 3]) {
     let _ = write!(s, "{} {} {}", v[0], v[1], v[2]);
 }
@@ -109,7 +135,58 @@ fn mat_attr(m: Mat4) -> String {
     m.to_cols_array().iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" ")
 }
 
+/// Which render a photo needs: the model itself, or the two floor passes used to measure the
+/// model's shadow for compositing onto a backdrop image.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Main,
+    FloorWithModel,
+    FloorOnly,
+}
+
+struct Linear {
+    px: Vec<[f32; 4]>,
+    w: usize,
+    h: usize,
+    export_ms: f64,
+    render_ms: f64,
+    tris: usize,
+}
+
 pub fn photo(r: &PhotoReq) -> anyhow::Result<PhotoOut> {
+    let main = render_pass(r, Pass::Main, r.samples)?;
+    let mut frame = tonemap(&main.px, main.w, main.h, r.light.exposure);
+    let (mut export_ms, mut render_ms) = (main.export_ms, main.render_ms);
+    let transparent = r.light.backplate.is_some() || !r.light.env_visible;
+    if transparent {
+        let bgc = r.light.background.map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8);
+        let mut plate = match &r.light.backplate {
+            Some((img, mode)) => crate::video::fit(img, frame.w, frame.h, mode, bgc),
+            None => crate::video::Frame { w: frame.w, h: frame.h, rgba: [bgc[0], bgc[1], bgc[2], 255].repeat((frame.w * frame.h) as usize) },
+        };
+        if r.light.backplate.is_some() && r.light.floor {
+            // Shadow = floor brightness with the model / without it, multiplied onto the backdrop.
+            let lowres = (r.samples / 2).max(8);
+            let with = render_pass(r, Pass::FloorWithModel, lowres)?;
+            let without = render_pass(r, Pass::FloorOnly, lowres)?;
+            export_ms += with.export_ms + without.export_ms;
+            render_ms += with.render_ms + without.render_ms;
+            let lum = |p: &[f32; 4]| 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+            for (k, px) in plate.rgba.chunks_exact_mut(4).enumerate() {
+                let (a, b) = (lum(&with.px[k]), lum(&without.px[k]));
+                let shade = if b > 1e-5 { (a / b).clamp(0.0, 1.0) } else { 1.0 };
+                for c in &mut px[..3] {
+                    *c = (*c as f32 * shade + 0.5) as u8;
+                }
+            }
+        }
+        crate::video::composite_over(&mut frame.rgba, &plate.rgba);
+    }
+    let png = crate::video::encode_png(&frame)?;
+    Ok(PhotoOut { png, frame, export_ms, render_ms, tris: main.tris })
+}
+
+fn render_pass(r: &PhotoReq, pass: Pass, samples: u32) -> anyhow::Result<Linear> {
     let t0 = Instant::now();
     let sc = r.scene;
     let aspect = r.width as f32 / r.height as f32;
@@ -126,7 +203,7 @@ pub fn photo(r: &PhotoReq) -> anyhow::Result<PhotoOut> {
     }
     let diag = (hi - lo).length().max(1.0);
     let floor_z = lo.z - diag * 0.0005;
-    if r.floor {
+    if r.light.floor || r.light.backplate.is_some() {
         // keep the floor in the depth range so the ortho eye sits in front of it
         let c = (lo + hi) * 0.5;
         for (dx, dy) in [(-1.0, -1.0), (1.0, 1.0)] {
@@ -138,6 +215,10 @@ pub fn photo(r: &PhotoReq) -> anyhow::Result<PhotoOut> {
     let mut x = String::with_capacity(1 << 22);
     x.push_str("<cycles>\n");
     let _ = writeln!(x, "<integrator use_denoise=\"true\" max_bounce=\"8\" />");
+    // Approximate shadow catcher: catcher shadows end up in the combined pass alpha, ready to composite.
+    // Over a backdrop the floor is a shadow catcher in the main pass (invisible, model gets a clean
+    // alpha); the floor passes render it as a plain matte floor to measure the shadow.
+    let catcher = r.light.backplate.is_some() && pass == Pass::Main;
     let _ = writeln!(x, "<film exposure=\"1.0\" />");
     // Camera: Cycles camera space is x right, y up, z forward.
     let cam_m = Mat4::from_cols(f.right.extend(0.0), f.up.extend(0.0), f.dir.extend(0.0), f.eye.extend(1.0));
@@ -172,43 +253,85 @@ pub fn photo(r: &PhotoReq) -> anyhow::Result<PhotoOut> {
         }
     }
     x.push_str("</transform>\n");
-    // Studio world: soft even environment plus a key sun from behind the camera's left shoulder.
-    let bg = r.background;
-    let _ = writeln!(
-        x,
-        "<background>\n  <background name=\"bg\" color=\"{} {} {}\" strength=\"0.4\" />\n  <connect from=\"bg background\" to=\"output surface\" />\n</background>",
-        bg[0], bg[1], bg[2]
-    );
+    let l = r.light;
+    let transparent = l.backplate.is_some() || !l.env_visible;
     let to_sun = (-f.dir * 0.55 + Vec3::Z * 0.75 - f.right * 0.45).normalize();
-    let zs = to_sun;
-    let xs = zs.cross(if zs.z.abs() > 0.99 { Vec3::X } else { Vec3::Z }).normalize();
-    let ys = zs.cross(xs);
-    let sun_m = Mat4::from_cols(xs.extend(0.0), ys.extend(0.0), zs.extend(0.0), glam::Vec4::W);
-    let _ = writeln!(
-        x,
-        "<shader name=\"sun\">\n  <emission name=\"e\" color=\"1 0.97 0.92\" strength=\"1.9\" />\n  <connect from=\"e emission\" to=\"output surface\" />\n</shader>"
-    );
-    let _ = writeln!(x, "<transform matrix=\"{}\">\n  <state shader=\"sun\">\n    <light light_type=\"sun\" angle=\"0.12\" />\n  </state>\n</transform>", mat_attr(sun_m));
-
-    // Softbox: a big emitter above and slightly in front of the model gives metals highlight bands.
-    {
-        let c = (lo + hi) * 0.5;
-        let pos = c + Vec3::Z * diag * 0.9 - f.dir.with_z(0.0).normalize_or_zero() * diag * 0.35;
-        let zl = (pos - c).normalize(); // light emits along -Z of its transform, towards the model
-        let xl = zl.cross(if zl.z.abs() > 0.99 { Vec3::X } else { Vec3::Z }).normalize();
-        let yl = zl.cross(xl);
-        let m = Mat4::from_cols(xl.extend(0.0), yl.extend(0.0), zl.extend(0.0), pos.extend(1.0));
+    let sun_light = |x: &mut String, dir: Vec3, strength: f32, angle: f32| {
+        let zs = dir;
+        let xs = zs.cross(if zs.z.abs() > 0.99 { Vec3::X } else { Vec3::Z }).normalize();
+        let ys = zs.cross(xs);
+        let m = Mat4::from_cols(xs.extend(0.0), ys.extend(0.0), zs.extend(0.0), glam::Vec4::W);
         let _ = writeln!(
             x,
-            "<shader name=\"softbox\">\n  <emission name=\"e\" color=\"1 1 1\" strength=\"2.2\" />\n  <connect from=\"e emission\" to=\"output surface\" />\n</shader>"
+            "<shader name=\"sun\">\n  <emission name=\"e\" color=\"1 0.97 0.92\" strength=\"{strength}\" />\n  <connect from=\"e emission\" to=\"output surface\" />\n</shader>"
         );
-        let _ = writeln!(
-            x,
-            "<transform matrix=\"{}\">\n  <state shader=\"softbox\">\n    <light light_type=\"area\" size=\"1\" sizeu=\"{}\" sizev=\"{}\" normalize=\"false\" spread=\"2.2\" />\n  </state>\n</transform>",
-            mat_attr(m),
-            diag * 0.9,
-            diag * 0.45
-        );
+        let _ = writeln!(x, "<transform matrix=\"{}\">\n  <state shader=\"sun\">\n    <light light_type=\"sun\" angle=\"{angle}\" />\n  </state>\n</transform>", mat_attr(m));
+    };
+    let tr = if transparent { " transparent=\"true\"" } else { "" };
+    match &l.env {
+        Env::Studio => {
+            // Soft even environment plus a key sun from behind the camera's left shoulder.
+            let bg = l.background;
+            let _ = writeln!(
+                x,
+                "<background{tr}>\n  <background name=\"bg\" color=\"{} {} {}\" strength=\"{}\" />\n  <connect from=\"bg background\" to=\"output surface\" />\n</background>",
+                bg[0], bg[1], bg[2], 0.4 * l.strength
+            );
+            sun_light(&mut x, to_sun, 1.9 * l.strength, 0.12);
+            // Softbox above and slightly in front of the model: highlight bands on metals.
+            let c = (lo + hi) * 0.5;
+            let pos = c + Vec3::Z * diag * 0.9 - f.dir.with_z(0.0).normalize_or_zero() * diag * 0.35;
+            let zl = (pos - c).normalize(); // light emits along -Z of its transform, towards the model
+            let xl = zl.cross(if zl.z.abs() > 0.99 { Vec3::X } else { Vec3::Z }).normalize();
+            let yl = zl.cross(xl);
+            let m = Mat4::from_cols(xl.extend(0.0), yl.extend(0.0), zl.extend(0.0), pos.extend(1.0));
+            let _ = writeln!(
+                x,
+                "<shader name=\"softbox\">\n  <emission name=\"e\" color=\"1 1 1\" strength=\"{}\" />\n  <connect from=\"e emission\" to=\"output surface\" />\n</shader>",
+                2.2 * l.strength
+            );
+            let _ = writeln!(
+                x,
+                "<transform matrix=\"{}\">\n  <state shader=\"softbox\">\n    <light light_type=\"area\" size=\"1\" sizeu=\"{}\" sizev=\"{}\" normalize=\"false\" spread=\"2.2\" />\n  </state>\n</transform>",
+                mat_attr(m),
+                diag * 0.9,
+                diag * 0.45
+            );
+        }
+        Env::Sky => {
+            let rot = l.rotation_deg.to_radians();
+            let sun = Vec3::new(to_sun.x * rot.cos() - to_sun.y * rot.sin(), to_sun.x * rot.sin() + to_sun.y * rot.cos(), to_sun.z).normalize();
+            let _ = writeln!(
+                x,
+                "<background{tr}>\n  <sky_texture name=\"sky\" sky_type=\"hosek_wilkie\" sun_direction=\"{} {} {}\" turbidity=\"2.5\" ground_albedo=\"0.3\" />\n  <background name=\"bg\" strength=\"{}\" />\n  <connect from=\"sky color\" to=\"bg color\" />\n  <connect from=\"bg background\" to=\"output surface\" />\n</background>",
+                sun.x, sun.y, sun.z, 0.35 * l.strength
+            );
+            sun_light(&mut x, sun, 3.5 * l.strength, 0.02);
+        }
+        Env::File(path) => {
+            anyhow::ensure!(path.exists(), "environment {} does not exist", path.display());
+            // Cycles' XML loader resolves image paths relative to the scene file, even absolute
+            // ones: place the image next to the scene and reference it by name.
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("img");
+            let local = format!("environment.{ext}");
+            std::fs::create_dir_all(&r.work_dir)?;
+            let dst = r.work_dir.join(&local);
+            if std::fs::metadata(&dst).map(|m| m.len()).ok() != std::fs::metadata(path).map(|m| m.len()).ok() {
+                std::fs::copy(path, &dst)?;
+            }
+            let _ = writeln!(
+                x,
+                "<background{tr}>\n  <environment_texture name=\"env\" filename=\"{}\" colorspace=\"{}\" tex_mapping.rotation=\"0 0 {}\" />\n  <background name=\"bg\" strength=\"{}\" />\n  <connect from=\"env color\" to=\"bg color\" />\n  <connect from=\"bg background\" to=\"output surface\" />\n</background>",
+                xml_escape(&local),
+                // standalone Cycles has no OCIO config: name the built-in transforms explicitly
+                match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+                    Some("hdr" | "exr" | "pfm" | "tif" | "tiff") => "data",
+                    _ => "__builtin_srgb",
+                },
+                l.rotation_deg.to_radians(),
+                l.strength
+            );
+        }
     }
 
     // Materials: one shader per distinct material.
@@ -233,23 +356,29 @@ pub fn photo(r: &PhotoReq) -> anyhow::Result<PhotoOut> {
             m.color[0], m.color[1], m.color[2], m.metallic, m.roughness, m.anisotropic
         );
     }
-    if r.floor {
+    if l.floor || l.backplate.is_some() {
+        if catcher {
+            // Shadow catcher: invisible itself, but its shadows/occlusion land in the alpha channel.
+            let _ = writeln!(x, "<object name=\"catcher\" is_shadow_catcher=\"true\" />");
+        }
         let _ = writeln!(
             x,
-            "<shader name=\"floor\">\n  <principled_bsdf name=\"p\" base_color=\"0.55 0.56 0.58\" metallic=\"0\" roughness=\"0.8\" />\n  <connect from=\"p bsdf\" to=\"output surface\" />\n</shader>"
+            "<shader name=\"floor\">\n  <principled_bsdf name=\"p\" base_color=\"{}\" metallic=\"0\" roughness=\"0.8\" />\n  <connect from=\"p bsdf\" to=\"output surface\" />\n</shader>",
+            if pass == Pass::Main { "0.55 0.56 0.58" } else { "0.8 0.8 0.8" }
         );
         let c = (lo + hi) * 0.5;
         let e = diag * 20.0;
         let _ = writeln!(
             x,
-            "<state shader=\"floor\">\n  <mesh P=\"{} {} {}  {} {} {}  {} {} {}  {} {} {}\" nverts=\"4\" verts=\"0 1 2 3\" />\n</state>",
+            "<state shader=\"floor\"{}>\n  <mesh P=\"{} {} {}  {} {} {}  {} {} {}  {} {} {}\" nverts=\"4\" verts=\"0 1 2 3\" />\n</state>",
+            if catcher { " object=\"catcher\"" } else { "" },
             c.x - e, c.y - e, floor_z, c.x + e, c.y - e, floor_z, c.x + e, c.y + e, floor_z, c.x - e, c.y + e, floor_z
         );
     }
     let mut tris = 0;
     for &i in &vis {
         let m = &sc.parts[i].cpu;
-        if m.idx.is_empty() {
+        if m.idx.is_empty() || pass == Pass::FloorOnly {
             continue;
         }
         tris += m.idx.len() / 3;
@@ -276,8 +405,13 @@ pub fn photo(r: &PhotoReq) -> anyhow::Result<PhotoOut> {
     }
     x.push_str("</cycles>\n");
     std::fs::create_dir_all(&r.work_dir)?;
-    let xml = r.work_dir.join("scene.xml");
-    let out = r.work_dir.join("photo.exr");
+    let tag = match pass {
+        Pass::Main => "main",
+        Pass::FloorWithModel => "floor_with",
+        Pass::FloorOnly => "floor_only",
+    };
+    let xml = r.work_dir.join(format!("scene_{tag}.xml"));
+    let out = r.work_dir.join(format!("photo_{tag}.exr"));
     let _ = std::fs::remove_file(&out);
     std::fs::write(&xml, x)?;
     let export_ms = t0.elapsed().as_secs_f64() * 1e3;
@@ -286,7 +420,7 @@ pub fn photo(r: &PhotoReq) -> anyhow::Result<PhotoOut> {
     let bin = cycles_binary()?;
     let log = r.work_dir.join("cycles.log");
     let mut child = std::process::Command::new(&bin)
-        .args(["--background", "--device", "METAL", "--samples", &r.samples.to_string()])
+        .args(["--background", "--device", "METAL", "--samples", &samples.to_string()])
         .args(["--width", &r.width.to_string(), "--height", &r.height.to_string(), "--output"])
         .arg(&out)
         .arg(&xml)
@@ -309,16 +443,11 @@ pub fn photo(r: &PhotoReq) -> anyhow::Result<PhotoOut> {
     let tail = |p: PathBuf| std::fs::read_to_string(p).unwrap_or_default().lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
     let log_tail = format!("{}\n{}", tail(log), tail(r.work_dir.join("cycles.err")));
     anyhow::ensure!(status.success() && out.exists(), "Cycles failed ({status}):\n{log_tail}");
-    let t2 = Instant::now();
-    let frame = tonemap_exr(&out, r.exposure)?;
-    let _ = t2;
-    let png = crate::video::encode_png(&frame)?;
-    Ok(PhotoOut { png, frame, export_ms, render_ms, tris })
+    let (px, w, h) = read_exr(&out)?;
+    Ok(Linear { px, w, h, export_ms, render_ms, tris })
 }
 
-
-/// Linear scene-referred EXR -> display PNG: exposure, filmic shoulder (ACES fit), sRGB encoding.
-fn tonemap_exr(path: &std::path::Path, exposure_stops: f32) -> anyhow::Result<crate::video::Frame> {
+fn read_exr(path: &std::path::Path) -> anyhow::Result<(Vec<[f32; 4]>, usize, usize)> {
     use exr::prelude::*;
     let img = read_first_rgba_layer_from_file(
         path,
@@ -328,6 +457,12 @@ fn tonemap_exr(path: &std::path::Path, exposure_stops: f32) -> anyhow::Result<cr
     .map_err(|e| anyhow::anyhow!("reading Cycles output: {e}"))?;
     let (px, w) = img.layer_data.channel_data.pixels;
     let h = px.len() / w;
+    Ok((px, w, h))
+}
+
+/// Linear scene-referred pixels -> display RGBA8: exposure, filmic shoulder (ACES fit), sRGB.
+/// Cycles writes associated (premultiplied) alpha: tonemap the straight colour, premultiply again.
+fn tonemap(px: &[[f32; 4]], w: usize, h: usize, exposure_stops: f32) -> crate::video::Frame {
     let k = 2f32.powf(exposure_stops);
     let aces = |x: f32| {
         let x = (x * k * 0.8).max(0.0);
@@ -335,11 +470,13 @@ fn tonemap_exr(path: &std::path::Path, exposure_stops: f32) -> anyhow::Result<cr
     };
     let srgb = |c: f32| if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
     let mut rgba = Vec::with_capacity(w * h * 4);
-    for p in &px {
+    for p in px {
+        let a = p[3].clamp(0.0, 1.0);
         for c in &p[..3] {
-            rgba.push((srgb(aces(*c)) * 255.0 + 0.5) as u8);
+            let v = if a > 1e-4 { srgb(aces(*c / a)) * a } else { 0.0 };
+            rgba.push((v * 255.0 + 0.5) as u8);
         }
-        rgba.push(255);
+        rgba.push((a * 255.0 + 0.5) as u8);
     }
-    Ok(crate::video::Frame { w: w as u32, h: h as u32, rgba })
+    crate::video::Frame { w: w as u32, h: h as u32, rgba }
 }

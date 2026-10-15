@@ -1,4 +1,4 @@
-//! shapeshot: an MCP server (stdio) that renders OpenCascade-readable CAD files on the GPU.
+//! cad-render-mcp: an MCP server (stdio) that renders OpenCascade-readable CAD files on the GPU.
 
 mod camera;
 mod font;
@@ -28,15 +28,15 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--version" | "-V") => {
-            println!("shapeshot {} (OCCT {})", env!("CARGO_PKG_VERSION"), occt::occt_version());
+            println!("cad-render-mcp {} (OCCT {})", env!("CARGO_PKG_VERSION"), occt::occt_version());
             Ok(())
         }
         Some("bench") => bench(&args[1..]),
         Some("--help" | "-h") => {
             println!(
-                "shapeshot {}: MCP server (stdio) for rendering and inspecting STEP/BREP/IGES files.\n\
-                 Register with: claude mcp add shapeshot -- {}\n\
-                 Dev: shapeshot bench <file|dir>... [-o out.png]",
+                "cad-render-mcp {}: MCP server (stdio) for rendering and inspecting STEP/BREP/IGES files.\n\
+                 Register with: claude mcp add cad-render -- {}\n\
+                 Dev: cad-render-mcp bench <file|dir>... [-o out.png]",
                 env!("CARGO_PKG_VERSION"),
                 std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()
             );
@@ -50,12 +50,12 @@ fn serve() -> anyhow::Result<()> {
     let out = protocol_stdout();
     let app = server::App::new();
     if let Some(e) = &app.renderer_err {
-        eprintln!("[shapeshot] {e}");
+        eprintln!("[cad-render] {e}");
     }
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(async move {
         let transport = (tokio::io::stdin(), tokio::fs::File::from_std(out));
-        let service = server::Shapeshot::new(app).serve(transport).await?;
+        let service = server::CadRender::new(app).serve(transport).await?;
         service.waiting().await?;
         anyhow::Ok(())
     })

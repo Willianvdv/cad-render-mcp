@@ -1,5 +1,5 @@
 [package]
-name = "shapeshot"
+name = "cad-render-mcp"
 version = "0.1.0"
 edition = "2024"
 description = "Headless, GPU-accelerated OpenCascade (STEP/BREP/IGES) renderer and geometry inspector that speaks only MCP."
@@ -30,6 +30,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "fs"] }
 wgpu = { version = "30", default-features = false, features = ["metal", "wgsl"] }
+zune-jpeg = "0.4"
 
 [build-dependencies]
 cc = "1"

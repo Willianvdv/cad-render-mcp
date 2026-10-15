@@ -1,4 +1,4 @@
-//! Per-project store of saved viewpoints, poses and motions (`.shapeshot.json` next to the model),
+//! Per-project store of saved viewpoints, poses and motions (`.cad-render.json` next to the model),
 //! so the same point of view can be reproduced in every session.
 
 use crate::camera::CamSpec;
@@ -63,11 +63,11 @@ impl Project {
     }
 }
 
-/// Default project file: `.shapeshot.json` in the directory of the first opened file (or the
+/// Default project file: `.cad-render.json` in the directory of the first opened file (or the
 /// directory itself when a directory was opened).
 pub fn default_path(first: &Path) -> PathBuf {
     let dir = if first.is_dir() { first.to_path_buf() } else { first.parent().map(Path::to_path_buf).unwrap_or_default() };
-    dir.join(".shapeshot.json")
+    dir.join(".cad-render.json")
 }
 
 /// Overlay the non-null fields of `over` onto `base` (both JSON objects).

@@ -2,3 +2,7 @@
 # CAD fixtures are private design data: keep them out of the public repo
 /testdata
 *.png
+
+# gallery images are published
+!docs/gallery/*.png
+!docs/gallery/*.gif

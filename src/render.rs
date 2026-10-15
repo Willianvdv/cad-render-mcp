@@ -97,6 +97,8 @@ pub struct RenderReq<'a> {
     pub poses: Vec<Vec<Mat4>>,
     /// Return raw RGBA instead of encoding a PNG (video frames).
     pub raw: bool,
+    /// Backdrop image fitted behind every tile (the model renders over it).
+    pub backplate: Option<(&'a crate::video::Frame, String)>,
 }
 
 pub struct RenderOut {
@@ -172,14 +174,14 @@ impl Renderer {
             ..wgpu::Limits::default()
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("shapeshot"),
+            label: Some("cad-render-mcp"),
             required_features: wgpu::Features::empty(),
             required_limits: limits,
             ..Default::default()
         }))?;
         let align = device.limits().min_uniform_buffer_offset_alignment as u64;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("shapeshot.wgsl"),
+            label: Some("cad-render-mcp.wgsl"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
         let ubo = |size: u64| wgpu::BindGroupLayoutEntry {
@@ -440,11 +442,10 @@ impl Renderer {
         let part_bg = bind(&self.part_bgl, &part_buf, std::mem::size_of::<PartU>());
 
         let bg = r.background.unwrap_or([1.0, 1.0, 1.0]);
-        let clear = wgpu::Color {
-            r: bg[0] as f64,
-            g: bg[1] as f64,
-            b: bg[2] as f64,
-            a: if r.background.is_some() { 1.0 } else { 0.0 },
+        let clear = if r.backplate.is_some() {
+            wgpu::Color::TRANSPARENT
+        } else {
+            wgpu::Color { r: bg[0] as f64, g: bg[1] as f64, b: bg[2] as f64, a: if r.background.is_some() { 1.0 } else { 0.0 } }
         };
         // Borrow-split: pipelines are fields of self, targets need &mut self.
         self.targets(w, h);
@@ -543,8 +544,21 @@ impl Renderer {
         t.readback.unmap();
         let gpu_ms = t0.elapsed().as_secs_f64() * 1e3;
 
-        // Annotations.
+        // Backdrop: the pass cleared to transparent, so composite every tile over the fitted image.
         let t1 = Instant::now();
+        if let Some((img, mode)) = &r.backplate {
+            let bgc = r.background.map(|c| c.map(|v| (v * 255.0) as u8)).unwrap_or([255, 255, 255]);
+            let plate = crate::video::fit(img, r.tile_w, r.tile_h, mode, bgc);
+            for k in 0..n {
+                let (tx, ty) = ((k % cols) * r.tile_w, (k / cols) * r.tile_h);
+                for y in 0..r.tile_h {
+                    let o = (((ty + y) * w + tx) * 4) as usize;
+                    let row = &mut px[o..o + (r.tile_w * 4) as usize];
+                    crate::video::composite_over(row, &plate.rgba[(y * r.tile_w * 4) as usize..((y + 1) * r.tile_w * 4) as usize]);
+                }
+            }
+        }
+        // Annotations.
         let mut cv = Canvas { px: &mut px, w, h };
         let scale = if r.tile_h >= 900 { 3 } else { 2 };
         for (k, v) in r.views.iter().enumerate() {
@@ -618,7 +632,8 @@ impl Renderer {
         if visible.is_empty() {
             notes.push("no visible parts".into());
         }
-        let (png, rgba) = if r.raw { (Vec::new(), Some(px)) } else { (encode_png(&px, w, h, r.background.is_some())?, None) };
+        let opaque = r.background.is_some() || r.backplate.is_some();
+        let (png, rgba) = if r.raw { (Vec::new(), Some(px)) } else { (encode_png(&px, w, h, opaque)?, None) };
         let encode_ms = t1.elapsed().as_secs_f64() * 1e3;
         Ok(RenderOut { png, width: w, height: h, gpu_ms, encode_ms, notes, cams: fits.iter().map(|f| f.spec).collect(), rgba })
     }

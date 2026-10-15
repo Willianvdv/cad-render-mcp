@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""End-to-end test of the shapeshot MCP server over stdio (stdlib only).
+"""End-to-end test of the cad-render-mcp MCP server over stdio (stdlib only).
 
 Replays the kind of calls the roof-rack session made against Fusion (open, multi-view renders,
 section, highlight, inspect bend radii, measure clearance, clash check, reload after a file
 change) and checks every response.
 
-usage: tests/mcp_e2e.py [path/to/shapeshot] [--out DIR]
+usage: tests/mcp_e2e.py [path/to/cad-render-mcp] [--out DIR]
 """
 import base64, json, os, shutil, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BIN = next((a for a in sys.argv[1:] if not a.startswith("--") and os.path.isfile(a)), os.path.join(ROOT, "target/release/shapeshot"))
-OUT = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else tempfile.mkdtemp(prefix="shapeshot-e2e-")
+BIN = next((a for a in sys.argv[1:] if not a.startswith("--") and os.path.isfile(a)), os.path.join(ROOT, "target/release/cad-render-mcp"))
+OUT = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else tempfile.mkdtemp(prefix="cad-render-e2e-")
 ASM = os.path.join(ROOT, "testdata/roofrack_v26a.step")
 PLATE = os.path.join(ROOT, "testdata/v26a_side_plate_L_5083_5mm.step")
 
@@ -96,7 +96,7 @@ def main():
     init = c.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}})
     c.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
     print(f"initialize {(time.perf_counter() - t0) * 1e3:.0f} ms: {init['serverInfo']}")
-    check("shapeshot" in init["serverInfo"]["name"], "server identifies as shapeshot")
+    check("cad-render" in init["serverInfo"]["name"], "server identifies as cad-render-mcp")
     check("instructions" in init and "render" in init["instructions"], "server sends usage instructions")
     tools = {t["name"]: t for t in c.request("tools/list")["tools"]}
     print("tools:", ", ".join(sorted(tools)))
@@ -210,7 +210,7 @@ def main():
     check(os.path.exists(gif) and open(gif, "rb").read(6) == b"GIF89a", "GIF written")
 
     # 17. photo (Cycles) when available
-    cycles = os.environ.get("SHAPESHOT_CYCLES", os.path.expanduser("~/src/shapeshot-deps/cycles/install/cycles"))
+    cycles = os.environ.get("CAD_RENDER_CYCLES", os.path.expanduser("~/src/cad-render-mcp-deps/cycles/install/cycles"))
     if os.path.exists(cycles):
         r, t, img = step(c, "photo", "photo", {"preset": "lamps", "width": 640, "height": 400, "samples": 16, "timeout_s": 600}, True)
         check(img is not None and png_size(img[0]) == (640, 400), "photo returns a 640x400 path-traced PNG")

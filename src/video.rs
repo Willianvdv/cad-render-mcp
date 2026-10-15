@@ -157,3 +157,80 @@ pub fn encode_png(f: &Frame) -> anyhow::Result<Vec<u8>> {
     Ok(out)
 }
 
+
+/// Load a PNG or JPEG as RGBA8.
+pub fn load_image(path: &Path) -> anyhow::Result<Frame> {
+    let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        let mut dec = png::Decoder::new(std::io::Cursor::new(&bytes));
+        dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let mut r = dec.read_info()?;
+        let mut buf = vec![0; r.output_buffer_size().ok_or_else(|| anyhow::anyhow!("png size"))?];
+        let info = r.next_frame(&mut buf)?;
+        let (w, h) = (info.width, info.height);
+        let n = (w * h) as usize;
+        let rgba = match info.color_type {
+            png::ColorType::Rgba => buf[..n * 4].to_vec(),
+            png::ColorType::Rgb => buf[..n * 3].chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+            png::ColorType::Grayscale => buf[..n].iter().flat_map(|&g| [g, g, g, 255]).collect(),
+            png::ColorType::GrayscaleAlpha => buf[..n * 2].chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+            c => anyhow::bail!("unsupported PNG colour type {c:?}"),
+        };
+        return Ok(Frame { w, h, rgba });
+    }
+    if bytes.starts_with(&[0xFF, 0xD8]) {
+        let mut dec = zune_jpeg::JpegDecoder::new(&bytes[..]);
+        let px = dec.decode().map_err(|e| anyhow::anyhow!("JPEG: {e:?}"))?;
+        let info = dec.info().ok_or_else(|| anyhow::anyhow!("JPEG: no header"))?;
+        let (w, h) = (info.width as u32, info.height as u32);
+        let comps = px.len() / (w * h) as usize;
+        let rgba = match comps {
+            3 => px.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+            1 => px.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+            4 => px,
+            c => anyhow::bail!("JPEG with {c} components"),
+        };
+        return Ok(Frame { w, h, rgba });
+    }
+    anyhow::bail!("{}: background images must be PNG or JPEG", path.display())
+}
+
+/// Resample `src` to exactly `w` x `h`: "cover" crops to fill, "contain" letterboxes on `bg`.
+pub fn fit(src: &Frame, w: u32, h: u32, mode: &str, bg: [u8; 3]) -> Frame {
+    let (sw, sh) = (src.w as f32, src.h as f32);
+    let s = if mode == "contain" { (w as f32 / sw).min(h as f32 / sh) } else { (w as f32 / sw).max(h as f32 / sh) };
+    let (ox, oy) = ((w as f32 - sw * s) * 0.5, (h as f32 - sh * s) * 0.5);
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let o = ((y * w + x) * 4) as usize;
+            let (fx, fy) = ((x as f32 + 0.5 - ox) / s - 0.5, (y as f32 + 0.5 - oy) / s - 0.5);
+            if fx < -0.5 || fy < -0.5 || fx > sw - 0.5 || fy > sh - 0.5 {
+                out[o..o + 4].copy_from_slice(&[bg[0], bg[1], bg[2], 255]);
+                continue;
+            }
+            let (x0, y0) = (fx.floor().clamp(0.0, sw - 1.0) as u32, fy.floor().clamp(0.0, sh - 1.0) as u32);
+            let (x1, y1) = ((x0 + 1).min(src.w - 1), (y0 + 1).min(src.h - 1));
+            let (tx, ty) = ((fx - x0 as f32).clamp(0.0, 1.0), (fy - y0 as f32).clamp(0.0, 1.0));
+            let at = |xx: u32, yy: u32, c: usize| src.rgba[((yy * src.w + xx) * 4) as usize + c] as f32;
+            for c in 0..3 {
+                let top = at(x0, y0, c) * (1.0 - tx) + at(x1, y0, c) * tx;
+                let bot = at(x0, y1, c) * (1.0 - tx) + at(x1, y1, c) * tx;
+                out[o + c] = (top * (1.0 - ty) + bot * ty + 0.5) as u8;
+            }
+            out[o + 3] = 255;
+        }
+    }
+    Frame { w, h, rgba: out }
+}
+
+/// `fg` is premultiplied RGBA (transparent background); put it over the opaque `bg` in place.
+pub fn composite_over(fg: &mut [u8], bg: &[u8]) {
+    for (f, b) in fg.chunks_exact_mut(4).zip(bg.chunks_exact(4)) {
+        let ia = 255 - f[3] as u32;
+        for c in 0..3 {
+            f[c] = (f[c] as u32 + (b[c] as u32 * ia + 127) / 255).min(255) as u8;
+        }
+        f[3] = 255;
+    }
+}

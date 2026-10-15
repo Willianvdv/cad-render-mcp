@@ -1,4 +1,4 @@
-// shapeshot shaders: shaded B-rep faces, screen-space-width feature edges and GPU silhouettes.
+// cad-render-mcp shaders: shaded B-rep faces, screen-space-width feature edges and GPU silhouettes.
 
 struct Camera {
     view_proj: mat4x4<f32>,

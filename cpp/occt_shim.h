@@ -1,4 +1,4 @@
-// C ABI between shapeshot (Rust) and Open CASCADE Technology.
+// C ABI between cad-render-mcp (Rust) and Open CASCADE Technology.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>

@@ -72,7 +72,7 @@ pub fn expand_paths(paths: &[String]) -> anyhow::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn shellexpand(p: &str) -> String {
+pub fn shellexpand(p: &str) -> String {
     if let Some(rest) = p.strip_prefix("~/")
         && let Ok(h) = std::env::var("HOME")
     {

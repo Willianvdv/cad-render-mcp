@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive a shapeshot MCP server with a script of tool calls; save returned images.
+"""Drive a cad-render-mcp MCP server with a script of tool calls; save returned images.
 
 usage: tests/drive.py calls.json OUT_DIR      (calls.json: [{"tool": "...", "args": {...}, "name": "..."}])
 """
@@ -8,7 +8,7 @@ import base64, json, os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mcp_e2e import ROOT, Client, text_of  # noqa: E402
 
-BIN = os.environ.get("SHAPESHOT_BIN", os.path.join(ROOT, "target/release/shapeshot"))
+BIN = os.environ.get("CAD_RENDER_BIN", os.path.join(ROOT, "target/release/cad-render-mcp"))
 
 calls = json.load(open(sys.argv[1]))
 out = sys.argv[2]
