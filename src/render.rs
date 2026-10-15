@@ -5,7 +5,7 @@ use crate::camera::{self, Up, View};
 use crate::font::Canvas;
 use crate::occt::PartMesh;
 use bytemuck::{Pod, Zeroable};
-use glam::{Vec3, Vec4};
+use glam::{Mat4, Vec3, Vec4};
 use std::time::Instant;
 use wgpu::util::DeviceExt;
 
@@ -29,6 +29,7 @@ struct CameraU {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PartU {
+    model: [[f32; 4]; 4],
     color: [f32; 4],
     edge: [f32; 4],
     cap: [f32; 4],
@@ -92,6 +93,8 @@ pub struct RenderReq<'a> {
     pub part_labels: Vec<(usize, String)>,
     pub xray: bool,
     pub unlit: bool,
+    /// Rigid placement per part: one set shared by all tiles, or one set per tile (motion frames).
+    pub poses: Vec<Vec<Mat4>>,
 }
 
 pub struct RenderOut {
@@ -101,6 +104,8 @@ pub struct RenderOut {
     pub gpu_ms: f64,
     pub encode_ms: f64,
     pub notes: Vec<String>,
+    /// Resolved camera per tile (store these to replay the exact viewpoint).
+    pub cams: Vec<camera::CamSpec>,
 }
 
 struct Targets {
@@ -341,16 +346,16 @@ impl Renderer {
         // What to frame: focus parts, else every visible part.
         let visible: Vec<usize> = (0..r.meshes.len()).filter(|&i| r.styles[i].visible).collect();
         let frame_set: Vec<usize> = if r.focus.is_empty() { visible.clone() } else { r.focus.clone() };
+        // Boxes in placed (posed) coordinates, over every tile's pose, so all tiles share one framing.
+        let pose = |slot: usize, i: usize| -> Mat4 { r.poses.get(slot).and_then(|p| p.get(i)).copied().unwrap_or(Mat4::IDENTITY) };
+        let box_corners = |a: Vec3, b: Vec3| (0..8).map(move |k| Vec3::new(if k & 1 == 0 { a.x } else { b.x }, if k & 2 == 0 { a.y } else { b.y }, if k & 4 == 0 { a.z } else { b.z }));
         let corners = |set: &[usize]| -> Vec<Vec3> {
             let mut v = Vec::new();
             for &i in set {
                 let (a, b) = r.boxes[i];
-                for k in 0..8 {
-                    v.push(Vec3::new(
-                        if k & 1 == 0 { a.x } else { b.x },
-                        if k & 2 == 0 { a.y } else { b.y },
-                        if k & 4 == 0 { a.z } else { b.z },
-                    ));
+                for slot in 0..r.poses.len().max(1) {
+                    let m = pose(slot, i);
+                    v.extend(box_corners(a, b).map(|c| m.transform_point3(c)));
                 }
             }
             if v.is_empty() {
@@ -359,13 +364,14 @@ impl Renderer {
             }
             v
         };
-        let frame_pts = match r.region {
-            Some((a, b)) => (0..8)
-                .map(|k| Vec3::new(if k & 1 == 0 { a.x } else { b.x }, if k & 2 == 0 { a.y } else { b.y }, if k & 4 == 0 { a.z } else { b.z }))
-                .collect(),
+        let frame_pts: Vec<Vec3> = match r.region {
+            Some((a, b)) => box_corners(a, b).collect(),
             None => corners(&frame_set),
         };
         let scene_pts = corners(&visible);
+        let slots = r.poses.len().max(1);
+        anyhow::ensure!(slots == 1 || slots == n as usize, "poses must be shared or one set per view");
+        let slot_of = |k: u32| if slots == 1 { 0 } else { k as usize };
 
         // Uniforms: one camera block per view, one style block per part.
         let a = self.align as usize;
@@ -375,7 +381,10 @@ impl Renderer {
         let mut fits = Vec::new();
         let aspect = r.tile_w as f32 / r.tile_h as f32;
         for (k, v) in r.views.iter().enumerate() {
-            let f = camera::fit(v.dir, r.up, &frame_pts, &scene_pts, aspect, r.zoom, r.perspective, r.tile_h);
+            let f = match &v.fixed {
+                Some(spec) => camera::build(spec, scene_pts.iter(), aspect, r.tile_h),
+                None => camera::fit(v.dir, r.up, &frame_pts, &scene_pts, aspect, r.zoom, r.perspective, r.tile_h),
+            };
             let light = (-f.dir * 0.8 + f.up * 0.45 - f.right * 0.35).normalize();
             let (clip, on) = match r.section {
                 Some((nrm, d, auto)) if auto && f.dir.dot(nrm) > 0.0 => ([-nrm.x, -nrm.y, -nrm.z, -d], 1.0),
@@ -384,7 +393,7 @@ impl Renderer {
             };
             let u = CameraU {
                 view_proj: f.view_proj.to_cols_array_2d(),
-                eye: [f.eye.x, f.eye.y, f.eye.z, if r.perspective { 1.0 } else { 0.0 }],
+                eye: [f.eye.x, f.eye.y, f.eye.z, if f.spec.distance.is_some() { 1.0 } else { 0.0 }],
                 view_dir: [f.dir.x, f.dir.y, f.dir.z, 0.0],
                 light: [light.x, light.y, light.z, 0.0],
                 viewport: [r.tile_w as f32, r.tile_h as f32, r.edge_px, r.edge_px * 1.15],
@@ -394,12 +403,21 @@ impl Renderer {
             cam_bytes[k * cam_stride..k * cam_stride + std::mem::size_of::<CameraU>()].copy_from_slice(bytemuck::bytes_of(&u));
             fits.push(f);
         }
-        let mut part_bytes = vec![0u8; part_stride * r.meshes.len().max(1)];
-        for (i, s) in r.styles.iter().enumerate() {
-            let (fa, ea) = if s.ghost { (if r.xray { 0.22 } else { 0.12 }, 0.28) } else { (1.0, 1.0) };
-            let cap = [s.color[0] * 0.55, s.color[1] * 0.45, s.color[2] * 0.45, 1.0];
-            let u = PartU { color: [s.color[0], s.color[1], s.color[2], fa], edge: [s.edge[0], s.edge[1], s.edge[2], ea], cap };
-            part_bytes[i * part_stride..i * part_stride + std::mem::size_of::<PartU>()].copy_from_slice(bytemuck::bytes_of(&u));
+        let np = r.meshes.len().max(1);
+        let mut part_bytes = vec![0u8; part_stride * np * slots];
+        for slot in 0..slots {
+            for (i, s) in r.styles.iter().enumerate() {
+                let (fa, ea) = if s.ghost { (if r.xray { 0.22 } else { 0.12 }, 0.28) } else { (1.0, 1.0) };
+                let cap = [s.color[0] * 0.55, s.color[1] * 0.45, s.color[2] * 0.45, 1.0];
+                let u = PartU {
+                    model: pose(slot, i).to_cols_array_2d(),
+                    color: [s.color[0], s.color[1], s.color[2], fa],
+                    edge: [s.edge[0], s.edge[1], s.edge[2], ea],
+                    cap,
+                };
+                let o = (slot * np + i) * part_stride;
+                part_bytes[o..o + std::mem::size_of::<PartU>()].copy_from_slice(bytemuck::bytes_of(&u));
+            }
         }
         let d = &self.device;
         let cam_buf = d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("cams"), contents: &cam_bytes, usage: wgpu::BufferUsages::UNIFORM });
@@ -459,7 +477,7 @@ impl Renderer {
                     for &i in &parts {
                         let m = r.meshes[i];
                         if let (Some(vb), Some(ib)) = (&m.vbuf, &m.ibuf) {
-                            pass.set_bind_group(1, &part_bg, &[(i * part_stride) as u32]);
+                            pass.set_bind_group(1, &part_bg, &[((slot_of(k) * np + i) * part_stride) as u32]);
                             pass.set_vertex_buffer(0, vb.slice(..));
                             pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                             pass.draw_indexed(0..m.nidx, 0, 0..1);
@@ -475,7 +493,7 @@ impl Renderer {
                         if let Some(eb) = &m.ebuf
                             && count > 0
                         {
-                            pass.set_bind_group(1, &part_bg, &[(i * part_stride) as u32]);
+                            pass.set_bind_group(1, &part_bg, &[((slot_of(k) * np + i) * part_stride) as u32]);
                             pass.set_vertex_buffer(0, eb.slice(..));
                             pass.draw(0..6, 0..count);
                         }
@@ -485,7 +503,7 @@ impl Renderer {
                         for &i in &parts {
                             let m = r.meshes[i];
                             if let Some(sb) = &m.sbuf {
-                                pass.set_bind_group(1, &part_bg, &[(i * part_stride) as u32]);
+                                pass.set_bind_group(1, &part_bg, &[((slot_of(k) * np + i) * part_stride) as u32]);
                                 pass.set_vertex_buffer(0, sb.slice(..));
                                 pass.draw(0..6, 0..m.n_sil);
                             }
@@ -535,7 +553,7 @@ impl Renderer {
             // Part labels at a surface point near each part's centre; greedy placement avoids overlaps.
             let mut placed: Vec<(i32, i32, i32, i32)> = Vec::new();
             for (i, name) in &r.part_labels {
-                let c = f.view_proj * Vec4::from((r.anchors[*i], 1.0));
+                let c = f.view_proj * Vec4::from((pose(slot_of(k), *i).transform_point3(r.anchors[*i]), 1.0));
                 if c.w <= 0.0 {
                     continue;
                 }
@@ -598,7 +616,7 @@ impl Renderer {
         }
         let png = encode_png(&px, w, h, r.background.is_some())?;
         let encode_ms = t1.elapsed().as_secs_f64() * 1e3;
-        Ok(RenderOut { png, width: w, height: h, gpu_ms, encode_ms, notes })
+        Ok(RenderOut { png, width: w, height: h, gpu_ms, encode_ms, notes, cams: fits.iter().map(|f| f.spec).collect() })
     }
 }
 

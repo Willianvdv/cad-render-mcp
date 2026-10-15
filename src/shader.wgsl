@@ -11,6 +11,7 @@ struct Camera {
 };
 
 struct Part {
+    model: mat4x4<f32>,    // rigid placement (pose)
     color: vec4<f32>,      // rgb, a = opacity
     edge: vec4<f32>,       // edge rgb, a = opacity
     cap: vec4<f32>,        // section cap colour
@@ -34,9 +35,10 @@ struct MeshOut {
 @vertex
 fn vs_mesh(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>) -> MeshOut {
     var o: MeshOut;
-    o.pos = cam.view_proj * vec4<f32>(p, 1.0);
-    o.world = p;
-    o.normal = n;
+    let w = (part.model * vec4<f32>(p, 1.0)).xyz;
+    o.pos = cam.view_proj * vec4<f32>(w, 1.0);
+    o.world = w;
+    o.normal = (part.model * vec4<f32>(n, 0.0)).xyz;
     return o;
 }
 
@@ -97,23 +99,25 @@ fn line_vertex(p0: vec3<f32>, p1: vec3<f32>, vi: u32, width: f32) -> LineOut {
 
 @vertex
 fn vs_edge(@location(0) p0: vec3<f32>, @location(1) p1: vec3<f32>, @builtin(vertex_index) vi: u32) -> LineOut {
-    return line_vertex(p0, p1, vi, cam.viewport.z);
+    return line_vertex((part.model * vec4<f32>(p0, 1.0)).xyz, (part.model * vec4<f32>(p1, 1.0)).xyz, vi, cam.viewport.z);
 }
 
 @vertex
 fn vs_sil(@location(0) p0: vec3<f32>, @location(1) p1: vec3<f32>, @location(2) n1: vec3<f32>,
           @location(3) n2: vec3<f32>, @builtin(vertex_index) vi: u32) -> LineOut {
+    let w0 = (part.model * vec4<f32>(p0, 1.0)).xyz;
+    let w1 = (part.model * vec4<f32>(p1, 1.0)).xyz;
     var v = -cam.view_dir.xyz;
-    if cam.eye.w > 0.5 { v = cam.eye.xyz - p0; }
-    let a = dot(n1, v);
-    let b = dot(n2, v);
+    if cam.eye.w > 0.5 { v = cam.eye.xyz - w0; }
+    let a = dot((part.model * vec4<f32>(n1, 0.0)).xyz, v);
+    let b = dot((part.model * vec4<f32>(n2, 0.0)).xyz, v);
     if a * b > 0.0 {
         var o: LineOut;
         o.pos = vec4<f32>(2.0, 2.0, 2.0, 1.0);  // not a silhouette from this view: cull
-        o.world = p0;
+        o.world = w0;
         return o;
     }
-    return line_vertex(p0, p1, vi, cam.viewport.w);
+    return line_vertex(w0, w1, vi, cam.viewport.w);
 }
 
 @fragment

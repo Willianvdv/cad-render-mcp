@@ -36,8 +36,10 @@ ss_part_view ss_doc_part(const ss_doc* d, int i);
 void ss_doc_release_mesh(ss_doc* d);
 char* ss_part_inspect(const ss_doc* d, int i);
 int ss_part_bbox(const ss_doc* d, int i, double out[6]);
-int ss_distance(const ss_doc* a, int ia, const ss_doc* b, int ib, double out[7]);
-int ss_common(const ss_doc* a, int ia, const ss_doc* b, int ib, double out[7]);
+// ma/mb: optional rigid placement, 3x4 row-major (rotation | translation); NULL = as loaded.
+int ss_distance(const ss_doc* a, int ia, const double* ma, const ss_doc* b, int ib, const double* mb, double out[7]);
+int ss_common(const ss_doc* a, int ia, const double* ma, const ss_doc* b, int ib, const double* mb, double out[7]);
+int ss_points_inside(const ss_doc* a, int ia, const double* ma, const ss_doc* b, int ib, const double* mb, int max_pts);
 void ss_str_free(char* s);
 const char* ss_occt_version(void);
 

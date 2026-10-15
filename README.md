@@ -54,7 +54,18 @@ claude mcp add shapeshot -- "$PWD/target/release/shapeshot"
 | `inspect` | exact volume, area, mass (`density`), centroid, bbox, topology counts, face types, cylinder radii (bend radii, holes), torus radii |
 | `measure` | exact minimum distance between two parts, with the closest points |
 | `clash` | boolean-common interference volume for every pair whose boxes overlap; optionally touching pairs |
+| `move` | rigid translate/rotate of parts (`rotate {axis, deg, origin}`), `reset`, apply or `save_pose` a named pose. render/measure/clash use the moved positions |
+| `motion` | sweep parts through a translate/rotate in N steps: exact clearance and interference per step, first contact, contact sheet of frames (fixed camera). `save_as` / `run` named motions |
+| `save_view` | store the last render (all options + the exact cameras) as a named view; `render {preset}` reproduces it pixel-for-pixel in any session, even after the model changes |
+| `saved` | list (or delete) the project's saved views, poses and motions |
 | `close` | unload everything |
+
+Saved views, poses and motions live in `.shapeshot.json` next to the first opened file (override
+with `open {project}`), so they can be committed with the model.
+
+Interference uses OCCT booleans with a small fuzzy tolerance and a retry ladder; if a boolean still
+returns nothing while the exact distance is 0, point classification (mesh nodes plus edge samples)
+decides, and the clash is reported with "volume unknown".
 
 Part selectors accept an id (`p12`), an exact name or path (`PLATE_L:1`), a glob (`BAR_*`) or a
 substring. Units are mm. Named views assume Z-up, with `front` looking along +Y.

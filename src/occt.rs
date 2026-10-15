@@ -34,8 +34,9 @@ unsafe extern "C" {
     fn ss_doc_release_mesh(d: *mut RawDoc);
     fn ss_part_inspect(d: *const RawDoc, i: c_int) -> *mut c_char;
     fn ss_part_bbox(d: *const RawDoc, i: c_int, out: *mut f64) -> c_int;
-    fn ss_distance(a: *const RawDoc, ia: c_int, b: *const RawDoc, ib: c_int, out: *mut f64) -> c_int;
-    fn ss_common(a: *const RawDoc, ia: c_int, b: *const RawDoc, ib: c_int, out: *mut f64) -> c_int;
+    fn ss_distance(a: *const RawDoc, ia: c_int, ma: *const f64, b: *const RawDoc, ib: c_int, mb: *const f64, out: *mut f64) -> c_int;
+    fn ss_common(a: *const RawDoc, ia: c_int, ma: *const f64, b: *const RawDoc, ib: c_int, mb: *const f64, out: *mut f64) -> c_int;
+    fn ss_points_inside(a: *const RawDoc, ia: c_int, ma: *const f64, b: *const RawDoc, ib: c_int, mb: *const f64, max_pts: c_int) -> c_int;
     fn ss_str_free(s: *mut c_char);
     fn ss_occt_version() -> *const c_char;
 }
@@ -49,8 +50,10 @@ pub struct Doc {
     raw: *mut RawDoc,
 }
 
-// OCCT shapes are only touched while the owning scene's mutex is held.
+// OCCT shapes are only modified while the owning scene's mutex is held; distance and
+// (non-destructive) boolean queries only read them, so they may run from several threads.
 unsafe impl Send for Doc {}
+unsafe impl Sync for Doc {}
 
 /// Tessellated part copied out of OCCT.
 pub struct PartMesh {
@@ -149,18 +152,43 @@ impl Doc {
     }
 }
 
-/// Minimum distance between two parts: (distance, point on a, point on b).
-pub fn distance(a: &Doc, ia: usize, b: &Doc, ib: usize) -> Option<(f64, [f64; 3], [f64; 3])> {
+/// Rigid placement as a 3x4 row-major matrix (None = as loaded).
+pub type Placement = Option<[f64; 12]>;
+
+pub fn placement(m: glam::Mat4) -> Placement {
+    if m == glam::Mat4::IDENTITY {
+        return None;
+    }
+    let c = m.to_cols_array_2d();
+    Some([
+        c[0][0] as f64, c[1][0] as f64, c[2][0] as f64, c[3][0] as f64,
+        c[0][1] as f64, c[1][1] as f64, c[2][1] as f64, c[3][1] as f64,
+        c[0][2] as f64, c[1][2] as f64, c[2][2] as f64, c[3][2] as f64,
+    ])
+}
+
+fn mptr(m: &Placement) -> *const f64 {
+    m.as_ref().map_or(std::ptr::null(), |a| a.as_ptr())
+}
+
+/// Minimum distance between two (placed) parts: (distance, point on a, point on b).
+pub fn distance(a: &Doc, ia: usize, ma: Placement, b: &Doc, ib: usize, mb: Placement) -> Option<(f64, [f64; 3], [f64; 3])> {
     let mut o = [0f64; 7];
-    (unsafe { ss_distance(a.raw, ia as c_int, b.raw, ib as c_int, o.as_mut_ptr()) } == 0)
+    (unsafe { ss_distance(a.raw, ia as c_int, mptr(&ma), b.raw, ib as c_int, mptr(&mb), o.as_mut_ptr()) } == 0)
         .then(|| (o[0], [o[1], o[2], o[3]], [o[4], o[5], o[6]]))
 }
 
-/// Boolean common of two parts: (volume, bbox of the overlap).
-pub fn common(a: &Doc, ia: usize, b: &Doc, ib: usize) -> Option<(f64, [f64; 6])> {
+/// Boolean common of two (placed) parts: (volume, bbox of the overlap).
+pub fn common(a: &Doc, ia: usize, ma: Placement, b: &Doc, ib: usize, mb: Placement) -> Option<(f64, [f64; 6])> {
     let mut o = [0f64; 7];
-    (unsafe { ss_common(a.raw, ia as c_int, b.raw, ib as c_int, o.as_mut_ptr()) } == 0)
+    (unsafe { ss_common(a.raw, ia as c_int, mptr(&ma), b.raw, ib as c_int, mptr(&mb), o.as_mut_ptr()) } == 0)
         .then(|| (o[0], [o[1], o[2], o[3], o[4], o[5], o[6]]))
+}
+
+/// Number of sampled surface points of `a` strictly inside solid `b` (None = failed).
+pub fn points_inside(a: &Doc, ia: usize, ma: Placement, b: &Doc, ib: usize, mb: Placement, max_pts: i32) -> Option<usize> {
+    let n = unsafe { ss_points_inside(a.raw, ia as c_int, mptr(&ma), b.raw, ib as c_int, mptr(&mb), max_pts) };
+    (n >= 0).then_some(n as usize)
 }
 
 impl Drop for Doc {

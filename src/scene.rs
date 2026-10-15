@@ -22,6 +22,8 @@ pub struct Part {
     pub anchor: Vec3,
     pub gpu: GpuMesh,
     pub empty: bool,
+    /// Current rigid placement (from `move`), applied on top of the file's own placement.
+    pub pose: glam::Mat4,
 }
 
 pub struct File {
@@ -181,24 +183,24 @@ impl Scene {
             }
         };
         // Keep part ids stable across reloads: reuse ids by (assembly path, occurrence order).
-        let old: Vec<(String, String)> = self.parts.iter().filter(|p| p.file == fi).map(|p| (p.path.clone(), p.id.clone())).collect();
+        let old: Vec<(String, String, glam::Mat4)> = self.parts.iter().filter(|p| p.file == fi).map(|p| (p.path.clone(), p.id.clone(), p.pose)).collect();
         let insert_at = self.parts.iter().position(|p| p.file == fi).unwrap_or(self.parts.len());
         self.parts.retain(|p| p.file != fi);
         let mut used = vec![false; old.len()];
         let mut new_parts = Vec::with_capacity(built.len());
         for (local, b) in built.into_iter().enumerate() {
-            let reuse = old.iter().enumerate().position(|(k, (op, _))| !used[k] && *op == b.path);
-            let id = match reuse {
+            let reuse = old.iter().enumerate().position(|(k, (op, _, _))| !used[k] && *op == b.path);
+            let (id, pose) = match reuse {
                 Some(k) => {
                     used[k] = true;
-                    old[k].1.clone()
+                    (old[k].1.clone(), old[k].2)
                 }
                 None => {
                     self.next_id += 1;
-                    format!("p{}", self.next_id)
+                    (format!("p{}", self.next_id), glam::Mat4::IDENTITY)
                 }
             };
-            new_parts.push(Part { id, name: b.name, path: b.path, file: fi, local, file_color: b.color, bmin: b.lo, bmax: b.hi, anchor: b.anchor, gpu: b.gpu, empty: b.empty });
+            new_parts.push(Part { id, name: b.name, path: b.path, file: fi, local, file_color: b.color, bmin: b.lo, bmax: b.hi, anchor: b.anchor, gpu: b.gpu, empty: b.empty, pose });
         }
         let insert_at = insert_at.min(self.parts.len());
         self.parts.splice(insert_at..insert_at, new_parts);
@@ -263,25 +265,61 @@ impl Scene {
         (out, missing)
     }
 
+    /// Axis-aligned box of part `i` placed with `m`.
+    pub fn posed_box(&self, i: usize, m: glam::Mat4) -> (Vec3, Vec3) {
+        let p = &self.parts[i];
+        let (a, b) = (p.bmin, p.bmax);
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for k in 0..8 {
+            let c = Vec3::new(if k & 1 == 0 { a.x } else { b.x }, if k & 2 == 0 { a.y } else { b.y }, if k & 4 == 0 { a.z } else { b.z });
+            let w = m.transform_point3(c);
+            lo = lo.min(w);
+            hi = hi.max(w);
+        }
+        (lo, hi)
+    }
+
+    /// Box of the part at its current pose.
+    pub fn world_box(&self, i: usize) -> (Vec3, Vec3) {
+        self.posed_box(i, self.parts[i].pose)
+    }
+
     pub fn bounds(&self, set: &[usize]) -> Option<(Vec3, Vec3)> {
-        let mut it = set.iter().map(|&i| &self.parts[i]).filter(|p| !p.empty);
-        let first = it.next()?;
-        let (mut lo, mut hi) = (first.bmin, first.bmax);
-        for p in it {
-            lo = lo.min(p.bmin);
-            hi = hi.max(p.bmax);
+        let mut it = set.iter().copied().filter(|&i| !self.parts[i].empty).map(|i| self.world_box(i));
+        let (mut lo, mut hi) = it.next()?;
+        for (a, b) in it {
+            lo = lo.min(a);
+            hi = hi.max(b);
         }
         Some((lo, hi))
     }
 
-    pub fn distance(&self, a: usize, b: usize) -> Option<(f64, [f64; 3], [f64; 3])> {
+    /// Exact distance with explicit placements (use `parts[i].pose` for the current pose).
+    pub fn distance_at(&self, a: usize, ma: glam::Mat4, b: usize, mb: glam::Mat4) -> Option<(f64, [f64; 3], [f64; 3])> {
         let (pa, pb) = (&self.parts[a], &self.parts[b]);
-        occt::distance(&self.files[pa.file].doc, pa.local, &self.files[pb.file].doc, pb.local)
+        occt::distance(&self.files[pa.file].doc, pa.local, occt::placement(ma), &self.files[pb.file].doc, pb.local, occt::placement(mb))
+    }
+
+    pub fn common_at(&self, a: usize, ma: glam::Mat4, b: usize, mb: glam::Mat4) -> Option<(f64, [f64; 6])> {
+        let (pa, pb) = (&self.parts[a], &self.parts[b]);
+        occt::common(&self.files[pa.file].doc, pa.local, occt::placement(ma), &self.files[pb.file].doc, pb.local, occt::placement(mb))
+    }
+
+    /// Point-classification interference test, both ways (fallback for failed booleans).
+    pub fn interferes_at(&self, a: usize, ma: glam::Mat4, b: usize, mb: glam::Mat4) -> bool {
+        let (pa, pb) = (&self.parts[a], &self.parts[b]);
+        let (da, db) = (&self.files[pa.file].doc, &self.files[pb.file].doc);
+        let (xa, xb) = (occt::placement(ma), occt::placement(mb));
+        occt::points_inside(da, pa.local, xa, db, pb.local, xb, 3000).unwrap_or(0) > 0
+            || occt::points_inside(db, pb.local, xb, da, pa.local, xa, 3000).unwrap_or(0) > 0
+    }
+
+    pub fn distance(&self, a: usize, b: usize) -> Option<(f64, [f64; 3], [f64; 3])> {
+        self.distance_at(a, self.parts[a].pose, b, self.parts[b].pose)
     }
 
     pub fn common(&self, a: usize, b: usize) -> Option<(f64, [f64; 6])> {
-        let (pa, pb) = (&self.parts[a], &self.parts[b]);
-        occt::common(&self.files[pa.file].doc, pa.local, &self.files[pb.file].doc, pb.local)
+        self.common_at(a, self.parts[a].pose, b, self.parts[b].pose)
     }
 
     pub fn inspect(&self, i: usize) -> serde_json::Value {

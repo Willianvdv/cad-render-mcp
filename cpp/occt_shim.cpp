@@ -8,6 +8,7 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
 #include <BRepLib.hxx>
@@ -18,6 +19,7 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_TangentialDeflection.hxx>
+#include <GCPnts_UniformAbscissa.hxx>
 #include <GProp_GProps.hxx>
 #include <IGESCAFControl_Reader.hxx>
 #include <Interface_Static.hxx>
@@ -381,6 +383,14 @@ void box_json(std::ostringstream& o, const Bnd_Box& b) {
   o << "[" << x0 << "," << y0 << "," << z0 << "," << x1 << "," << y1 << "," << z1 << "]";
 }
 
+// Optional rigid placement: 3x4 row-major matrix (rotation | translation), nullptr = identity.
+TopoDS_Shape placed(const TopoDS_Shape& s, const double* m) {
+  if (!m) return s;
+  gp_Trsf t;
+  t.SetValues(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+  return s.Moved(TopLoc_Location(t));
+}
+
 }  // namespace
 
 extern "C" {
@@ -547,14 +557,14 @@ int ss_part_bbox(const ss_doc* dd, int i, double out[6]) {
   }
 }
 
-int ss_distance(const ss_doc* da, int ia, const ss_doc* db, int ib, double out[7]) {
+int ss_distance(const ss_doc* da, int ia, const double* ma, const ss_doc* db, int ib, const double* mb, double out[7]) {
   try {
     const auto& a = reinterpret_cast<const Doc*>(da)->parts.at(ia);
     const auto& b = reinterpret_cast<const Doc*>(db)->parts.at(ib);
     BRepExtrema_DistShapeShape d;
     d.SetMultiThread(true);
-    d.LoadS1(a.shape);
-    d.LoadS2(b.shape);
+    d.LoadS1(placed(a.shape, ma));
+    d.LoadS2(placed(b.shape, mb));
     d.Perform();
     if (!d.IsDone() || d.NbSolution() < 1) return -1;
     gp_Pnt p1 = d.PointOnShape1(1), p2 = d.PointOnShape2(1);
@@ -567,24 +577,113 @@ int ss_distance(const ss_doc* da, int ia, const ss_doc* db, int ib, double out[7
   }
 }
 
-int ss_common(const ss_doc* da, int ia, const ss_doc* db, int ib, double out[7]) {
+}  // extern "C"
+
+namespace {
+// One boolean common; returns false on error. vol = |volume| of the result.
+bool common_once(const TopoDS_Shape& sa, const TopoDS_Shape& sb, double fuzzy, double& vol, Bnd_Box& box) {
+  BRepAlgoAPI_Common op;
+  TopTools_ListOfShape args, tools;
+  args.Append(sa);
+  tools.Append(sb);
+  op.SetArguments(args);
+  op.SetTools(tools);
+  op.SetNonDestructive(true);  // never modify the loaded shapes (queries may run concurrently)
+  op.SetFuzzyValue(fuzzy);     // near-coincident faces (parts resting on each other) break exact booleans
+  op.Build();
+  if (op.HasErrors()) return false;
+  GProp_GProps vp;
+  BRepGProp::VolumeProperties(op.Shape(), vp);
+  vol = std::fabs(vp.Mass());
+  box.SetVoid();
+  BRepBndLib::Add(op.Shape(), box, false);
+  return true;
+}
+}  // namespace
+
+extern "C" {
+
+// Boolean common volume with a retry ladder: exact booleans occasionally return an empty result
+// (no error) for grazing/near-coincident configurations; retrying with swapped arguments or a
+// larger fuzzy tolerance recovers most of them.
+int ss_common(const ss_doc* da, int ia, const double* ma, const ss_doc* db, int ib, const double* mb, double out[7]) {
   try {
     const auto& a = reinterpret_cast<const Doc*>(da)->parts.at(ia);
     const auto& b = reinterpret_cast<const Doc*>(db)->parts.at(ib);
-    BRepAlgoAPI_Common op(a.shape, b.shape);
-    if (op.HasErrors()) return -1;
-    const TopoDS_Shape& r = op.Shape();
-    GProp_GProps vp;
-    BRepGProp::VolumeProperties(r, vp);
-    out[0] = vp.Mass();
+    const TopoDS_Shape sa = placed(a.shape, ma), sb = placed(b.shape, mb);
+    struct Try { bool swap; double fuzzy; };
+    const Try tries[] = {{false, 1e-3}, {true, 1e-3}, {false, 1e-2}, {true, 5e-2}};
+    bool any_ok = false;
+    double vol = 0;
     Bnd_Box box;
-    BRepBndLib::Add(r, box, false);
+    for (const Try& t : tries) {
+      double v = 0;
+      Bnd_Box bx;
+      bool ok = t.swap ? common_once(sb, sa, t.fuzzy, v, bx) : common_once(sa, sb, t.fuzzy, v, bx);
+      if (!ok) continue;
+      any_ok = true;
+      if (v > vol) { vol = v; box = bx; }
+      if (v > 1e-6) break;
+    }
+    if (!any_ok) return -1;
+    out[0] = vol;
     if (box.IsVoid()) {
       for (int k = 1; k < 7; k++) out[k] = 0;
     } else {
       box.Get(out[1], out[2], out[3], out[4], out[5], out[6]);
     }
     return 0;
+  } catch (...) {
+    return -1;
+  }
+}
+
+// Count tessellation nodes of a (placed) that lie strictly inside solid b (placed), sampling at
+// most max_pts nodes inside b's box. Robust fallback when a boolean reports no overlap.
+int ss_points_inside(const ss_doc* da, int ia, const double* ma, const ss_doc* db, int ib, const double* mb, int max_pts) {
+  try {
+    const auto& a = reinterpret_cast<const Doc*>(da)->parts.at(ia);
+    const auto& b = reinterpret_cast<const Doc*>(db)->parts.at(ib);
+    TopoDS_Shape sa = placed(a.shape, ma), sb = placed(b.shape, mb);
+    Bnd_Box bb;
+    BRepBndLib::Add(sb, bb, true);
+    std::vector<gp_Pnt> pts;
+    for (TopExp_Explorer ex(sa, TopAbs_FACE); ex.More(); ex.Next()) {
+      TopLoc_Location loc;
+      Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(TopoDS::Face(ex.Current()), loc);
+      if (tri.IsNull()) continue;
+      const gp_Trsf T = loc.Transformation();
+      for (int i = 1; i <= tri->NbNodes(); i++) {
+        gp_Pnt q = tri->Node(i).Transformed(T);
+        if (!bb.IsOut(q)) pts.push_back(q);
+      }
+    }
+    // Edge points every ~2 mm: coarse face meshes can straddle a thin part without a node inside it.
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(sa, TopAbs_EDGE, edges);
+    for (int i = 1; i <= edges.Extent(); i++) {
+      const TopoDS_Edge& e = TopoDS::Edge(edges(i));
+      if (BRep_Tool::Degenerated(e)) continue;
+      try {
+        BRepAdaptor_Curve c(e);
+        GCPnts_UniformAbscissa ua(c, 2.0);
+        if (!ua.IsDone()) continue;
+        for (int k = 1; k <= ua.NbPoints(); k++) {
+          gp_Pnt q = c.Value(ua.Parameter(k));
+          if (!bb.IsOut(q)) pts.push_back(q);
+        }
+      } catch (...) {
+      }
+    }
+    if (pts.empty()) return 0;
+    size_t stride = std::max<size_t>(1, pts.size() / std::max(1, max_pts));
+    BRepClass3d_SolidClassifier cls(sb);
+    int inside = 0;
+    for (size_t k = 0; k < pts.size(); k += stride) {
+      cls.Perform(pts[k], 0.05);
+      if (cls.State() == TopAbs_IN) inside++;
+    }
+    return inside;
   } catch (...) {
     return -1;
   }

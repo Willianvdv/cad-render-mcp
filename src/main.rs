@@ -3,6 +3,7 @@
 mod camera;
 mod font;
 mod occt;
+mod project;
 mod render;
 mod scene;
 mod server;
@@ -73,7 +74,7 @@ fn bench(args: &[String]) -> anyhow::Result<()> {
     let t = std::time::Instant::now();
     let mut app = server::App::new();
     println!("gpu init {:.0} ms ({})", t.elapsed().as_secs_f64() * 1e3, app.renderer.as_ref().map(|r| r.adapter_name.as_str()).unwrap_or("none"));
-    let s = server::do_open(&mut app, &server::OpenParams { paths, add: None, deflection_mm: None, angle_deg: None, split_solids: std::env::var("SPLIT").ok().map(|v| v == "1") })?;
+    let s = server::do_open(&mut app, &server::OpenParams { paths, add: None, deflection_mm: None, angle_deg: None, split_solids: std::env::var("SPLIT").ok().map(|v| v == "1"), project: None })?;
     println!("{}", s.lines().take_while(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"));
     let cases: &[(&str, serde_json::Value)] = &[
         ("iso 1200x900", serde_json::json!({})),

@@ -30,6 +30,8 @@ impl Up {
 
 pub struct View {
     pub label: String,
+    /// Stored camera to replay exactly instead of fitting.
+    pub fixed: Option<CamSpec>,
     /// Viewing direction (camera -> scene), model space.
     pub dir: Vec3,
 }
@@ -57,7 +59,7 @@ pub fn parse_view(spec: &str, up: Up) -> anyhow::Result<View> {
                 anyhow::ensure!(v.len() == 3, "dir: needs 3 numbers (camera -> scene, model space)");
                 let d = Vec3::new(v[0], v[1], v[2]);
                 anyhow::ensure!(d.length() > 0.0, "dir: must be non-zero");
-                return Ok(View { label: spec.trim().to_uppercase(), dir: d.normalize() });
+                return Ok(View { label: spec.trim().to_uppercase(), fixed: None, dir: d.normalize() });
             } else if let Some(rest) = s.strip_prefix("az") {
                 // az<deg>el<deg>: camera azimuth from front (-Y) towards right (+X), elevation above horizon
                 let (a, e) = rest.split_once("el").ok_or_else(|| anyhow::anyhow!("use az<deg>el<deg>, e.g. az30el20"))?;
@@ -72,7 +74,22 @@ pub fn parse_view(spec: &str, up: Up) -> anyhow::Result<View> {
             }
         }
     };
-    Ok(View { label: spec.trim().to_uppercase(), dir: up.map(d).normalize() })
+    Ok(View { label: spec.trim().to_uppercase(), fixed: None, dir: up.map(d).normalize() })
+}
+
+/// A resolved camera that can be stored and replayed exactly (a frozen viewpoint).
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct CamSpec {
+    /// Viewing direction (camera -> scene), model space.
+    pub dir: [f32; 3],
+    /// Screen-up direction, model space.
+    pub up: [f32; 3],
+    /// Point the camera looks at (centre of the tile), mm.
+    pub target: [f32; 3],
+    /// Half of the visible height at the target, mm.
+    pub half_height: f32,
+    /// Eye distance from the target in mm (perspective only).
+    pub distance: Option<f32>,
 }
 
 pub struct Fitted {
@@ -83,7 +100,10 @@ pub struct Fitted {
     pub up: Vec3,
     /// Model units (mm) per pixel, orthographic only.
     pub mm_per_px: Option<f32>,
+    pub spec: CamSpec,
 }
+
+const FOV_Y_DEG: f32 = 30.0;
 
 /// Fit the camera so `pts` (bbox corners of what should be in frame) fill the tile.
 pub fn fit(dir: Vec3, up: Up, pts: &[Vec3], scene_pts: &[Vec3], aspect: f32, zoom: f32, perspective: bool, tile_h_px: u32) -> Fitted {
@@ -95,52 +115,63 @@ pub fn fit(dir: Vec3, up: Up, pts: &[Vec3], scene_pts: &[Vec3], aspect: f32, zoo
     let right = dir.cross(upv).normalize();
     let up_s = right.cross(dir).normalize();
     let (mut rmin, mut rmax, mut umin, mut umax) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    let (mut fdmin, mut fdmax) = (f32::MAX, f32::MIN);
     for p in pts {
-        let r = p.dot(right);
-        let u = p.dot(up_s);
+        let (r, u, d) = (p.dot(right), p.dot(up_s), p.dot(dir));
         rmin = rmin.min(r);
         rmax = rmax.max(r);
         umin = umin.min(u);
         umax = umax.max(u);
+        fdmin = fdmin.min(d);
+        fdmax = fdmax.max(d);
     }
-    let depth_range = |set: &mut dyn Iterator<Item = &Vec3>| {
-        let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-        for p in set {
-            let d = p.dot(dir);
-            lo = lo.min(d);
-            hi = hi.max(d);
-        }
-        (lo, hi)
-    };
-    let (fdmin, fdmax) = depth_range(&mut pts.iter());
-    let (sdmin, sdmax) = depth_range(&mut scene_pts.iter().chain(pts));
-    let cr = (rmin + rmax) * 0.5;
-    let cu = (umin + umax) * 0.5;
     let margin = 1.08 / zoom.max(1e-3);
     let mut hw = ((rmax - rmin) * 0.5).max(1e-3) * margin;
     let mut hh = ((umax - umin) * 0.5).max(1e-3) * margin;
     if hw / hh > aspect { hh = hw / aspect } else { hw = hh * aspect }
+    let _ = hw;
+    let target = right * (rmin + rmax) * 0.5 + up_s * (umin + umax) * 0.5 + dir * (fdmin + fdmax) * 0.5;
+    let distance = perspective.then(|| hh / (FOV_Y_DEG.to_radians() * 0.5).tan() + (fdmax - fdmin).max(1e-3) * 0.5);
+    let spec = CamSpec { dir: dir.into(), up: up_s.into(), target: target.into(), half_height: hh, distance };
+    build(&spec, scene_pts.iter().chain(pts), aspect, tile_h_px)
+}
+
+/// Build the projection for a (possibly stored) camera; near/far planes follow the current scene.
+pub fn build<'a>(spec: &CamSpec, scene_pts: impl Iterator<Item = &'a Vec3>, aspect: f32, tile_h_px: u32) -> Fitted {
+    let dir = Vec3::from(spec.dir).normalize();
+    let right = dir.cross(Vec3::from(spec.up)).normalize();
+    let up_s = right.cross(dir).normalize();
+    let target = Vec3::from(spec.target);
+    let hh = spec.half_height.max(1e-3);
+    let (mut sdmin, mut sdmax) = (f32::MAX, f32::MIN);
+    for p in scene_pts {
+        let d = p.dot(dir);
+        sdmin = sdmin.min(d);
+        sdmax = sdmax.max(d);
+    }
+    let td = target.dot(dir);
+    if sdmin > sdmax {
+        sdmin = td - 1.0;
+        sdmax = td + 1.0;
+    }
     let sdepth = (sdmax - sdmin).max(1e-3);
-    if perspective {
-        let fov_y = 30f32.to_radians();
-        let tan = (fov_y * 0.5).tan();
-        let fdepth = (fdmax - fdmin).max(1e-3);
-        let center = right * cr + up_s * cu + dir * (fdmin + fdmax) * 0.5;
-        let dist = hh / tan + fdepth * 0.5;
-        let eye = center - dir * dist;
+    if let Some(dist) = spec.distance {
+        let eye = target - dir * dist;
         let eye_d = eye.dot(dir);
         let near = (sdmin - eye_d - sdepth * 0.02).max(dist * 0.01);
         let far = (sdmax - eye_d + sdepth * 0.02 + 1.0).max(near + 1.0);
-        let view = Mat4::look_at_rh(eye, center, up_s);
-        let proj = Mat4::perspective_rh(fov_y, aspect, near, far);
-        Fitted { view_proj: proj * view, eye, dir, right, up: up_s, mm_per_px: None }
+        let view = Mat4::look_at_rh(eye, target, up_s);
+        let proj = Mat4::perspective_rh(FOV_Y_DEG.to_radians(), aspect, near, far);
+        Fitted { view_proj: proj * view, eye, dir, right, up: up_s, mm_per_px: None, spec: *spec }
     } else {
-        let center = right * cr + up_s * cu + dir * (sdmin + sdmax) * 0.5;
-        let eye = center - dir * (sdepth * 0.55 + 1.0);
-        let view = Mat4::look_at_rh(eye, center, up_s);
-        let far = sdepth * 1.1 + 2.0;
+        // eye in front of everything in the scene, looking through `target`
+        let back = (td - sdmin).max(0.0) + sdepth * 0.05 + 1.0;
+        let eye = target - dir * back;
+        let view = Mat4::look_at_rh(eye, target, up_s);
+        let far = back + (sdmax - td).max(0.0) + sdepth * 0.05 + 2.0;
+        let hw = hh * aspect;
         let proj = Mat4::orthographic_rh(-hw, hw, -hh, hh, 0.0, far);
-        Fitted { view_proj: proj * view, eye, dir, right, up: up_s, mm_per_px: Some(2.0 * hh / tile_h_px as f32) }
+        Fitted { view_proj: proj * view, eye, dir, right, up: up_s, mm_per_px: Some(2.0 * hh / tile_h_px as f32), spec: *spec }
     }
 }
 
