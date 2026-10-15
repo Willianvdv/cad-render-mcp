@@ -2,7 +2,7 @@
 name = "cad-render-mcp"
 version = "0.1.0"
 edition = "2024"
-description = "Headless, GPU-accelerated OpenCascade (STEP/BREP/IGES) renderer and geometry inspector that speaks only MCP."
+description = "Let Claude open your CAD files (STEP, IGES, BREP), look at them from every angle, measure them and make photos and videos of them, through MCP."
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 keywords = ["cad", "opencascade", "step", "mcp", "render"]
