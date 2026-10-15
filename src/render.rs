@@ -156,6 +156,23 @@ fn blend() -> wgpu::BlendState {
     }
 }
 
+impl GpuMesh {
+    /// Placeholder when no GPU is available: geometry tools still work, rendering does not.
+    pub fn cpu_only(tris: usize) -> GpuMesh {
+        GpuMesh {
+            vbuf: None,
+            ibuf: None,
+            nidx: 0,
+            ebuf: None,
+            n_sharp: 0,
+            n_edges: 0,
+            sbuf: None,
+            n_sil: 0,
+            tris,
+        }
+    }
+}
+
 impl Renderer {
     pub fn new() -> anyhow::Result<Renderer> {
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -173,12 +190,13 @@ impl Renderer {
             max_buffer_size: adapter.limits().max_buffer_size,
             ..wgpu::Limits::default()
         };
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("cad-render-mcp"),
-            required_features: wgpu::Features::empty(),
-            required_limits: limits,
-            ..Default::default()
-        }))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("cad-render-mcp"),
+                required_features: wgpu::Features::empty(),
+                required_limits: limits,
+                ..Default::default()
+            }))?;
         let align = device.limits().min_uniform_buffer_offset_alignment as u64;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cad-render-mcp.wgsl"),
@@ -207,11 +225,20 @@ impl Renderer {
             bind_group_layouts: &[Some(&cam_bgl), Some(&part_bgl)],
             immediate_size: 0,
         });
-        let f3 = |loc: u32, off: u64| wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: off, shader_location: loc };
+        let f3 = |loc: u32, off: u64| wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: off,
+            shader_location: loc,
+        };
         let mesh_attrs = [f3(0, 0), f3(1, 12)];
         let edge_attrs = [f3(0, 0), f3(1, 12)];
         let sil_attrs = [f3(0, 0), f3(1, 12), f3(2, 24), f3(3, 36)];
-        let mk = |label: &str, vs: &str, fs: &str, buf: wgpu::VertexBufferLayout, ghost: bool, faces: bool| {
+        let mk = |label: &str,
+                  vs: &str,
+                  fs: &str,
+                  buf: wgpu::VertexBufferLayout,
+                  ghost: bool,
+                  faces: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&layout),
@@ -232,12 +259,20 @@ impl Renderer {
                     depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: Default::default(),
                     bias: if faces {
-                        wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 }
+                        wgpu::DepthBiasState {
+                            constant: 2,
+                            slope_scale: 1.5,
+                            clamp: 0.0,
+                        }
                     } else {
                         Default::default()
                     },
                 }),
-                multisample: wgpu::MultisampleState { count: SAMPLES, mask: !0, alpha_to_coverage_enabled: false },
+                multisample: wgpu::MultisampleState {
+                    count: SAMPLES,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(fs),
@@ -252,9 +287,21 @@ impl Renderer {
                 cache: None,
             })
         };
-        let mesh_buf = || wgpu::VertexBufferLayout { array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex, attributes: &mesh_attrs };
-        let edge_buf = || wgpu::VertexBufferLayout { array_stride: 24, step_mode: wgpu::VertexStepMode::Instance, attributes: &edge_attrs };
-        let sil_buf = || wgpu::VertexBufferLayout { array_stride: 48, step_mode: wgpu::VertexStepMode::Instance, attributes: &sil_attrs };
+        let mesh_buf = || wgpu::VertexBufferLayout {
+            array_stride: 24,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &mesh_attrs,
+        };
+        let edge_buf = || wgpu::VertexBufferLayout {
+            array_stride: 24,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &edge_attrs,
+        };
+        let sil_buf = || wgpu::VertexBufferLayout {
+            array_stride: 48,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &sil_attrs,
+        };
         let mesh_opaque = mk("mesh", "vs_mesh", "fs_mesh", mesh_buf(), false, true);
         let mesh_ghost = mk("mesh_ghost", "vs_mesh", "fs_mesh", mesh_buf(), true, true);
         let edge_opaque = mk("edge", "vs_edge", "fs_edge", edge_buf(), false, false);
@@ -281,7 +328,13 @@ impl Renderer {
     pub fn upload(&self, m: &PartMesh) -> GpuMesh {
         let d = &self.device;
         let mk = |label: &str, bytes: &[u8], usage: wgpu::BufferUsages| -> Option<wgpu::Buffer> {
-            (!bytes.is_empty()).then(|| d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytes, usage }))
+            (!bytes.is_empty()).then(|| {
+                d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(label),
+                    contents: bytes,
+                    usage,
+                })
+            })
         };
         let mut inter: Vec<[f32; 3]> = Vec::with_capacity(m.pos.len() * 2);
         for (p, n) in m.pos.iter().zip(&m.nrm) {
@@ -289,13 +342,29 @@ impl Renderer {
             inter.push(*n);
         }
         GpuMesh {
-            vbuf: mk("vbuf", bytemuck::cast_slice(&inter), wgpu::BufferUsages::VERTEX),
-            ibuf: mk("ibuf", bytemuck::cast_slice(&m.idx), wgpu::BufferUsages::INDEX),
+            vbuf: mk(
+                "vbuf",
+                bytemuck::cast_slice(&inter),
+                wgpu::BufferUsages::VERTEX,
+            ),
+            ibuf: mk(
+                "ibuf",
+                bytemuck::cast_slice(&m.idx),
+                wgpu::BufferUsages::INDEX,
+            ),
             nidx: m.idx.len() as u32,
-            ebuf: mk("ebuf", bytemuck::cast_slice(&m.edges), wgpu::BufferUsages::VERTEX),
+            ebuf: mk(
+                "ebuf",
+                bytemuck::cast_slice(&m.edges),
+                wgpu::BufferUsages::VERTEX,
+            ),
             n_sharp: m.sharp_edges as u32,
             n_edges: (m.edges.len() / 2) as u32,
-            sbuf: mk("sbuf", bytemuck::cast_slice(&m.sil), wgpu::BufferUsages::VERTEX),
+            sbuf: mk(
+                "sbuf",
+                bytemuck::cast_slice(&m.sil),
+                wgpu::BufferUsages::VERTEX,
+            ),
             n_sil: m.sil.len() as u32,
             tris: m.idx.len() / 3,
         }
@@ -307,7 +376,11 @@ impl Renderer {
             let tex = |label: &str, fmt, samples, usage| {
                 d.create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
-                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    size: wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
                     mip_level_count: 1,
                     sample_count: samples,
                     dimension: wgpu::TextureDimension::D2,
@@ -316,9 +389,24 @@ impl Renderer {
                     view_formats: &[],
                 })
             };
-            let msaa = tex("msaa", COLOR_FMT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT);
-            let resolve = tex("resolve", COLOR_FMT, 1, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
-            let depth = tex("depth", DEPTH_FMT, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT);
+            let msaa = tex(
+                "msaa",
+                COLOR_FMT,
+                SAMPLES,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            );
+            let resolve = tex(
+                "resolve",
+                COLOR_FMT,
+                1,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            );
+            let depth = tex(
+                "depth",
+                DEPTH_FMT,
+                SAMPLES,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            );
             let padded_row = (w * 4).div_ceil(256) * 256;
             let readback = d.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("readback"),
@@ -346,15 +434,38 @@ impl Renderer {
         let cols = r.cols.clamp(1, n);
         let rows = n.div_ceil(cols);
         let (w, h) = (r.tile_w * cols, r.tile_h * rows);
-        anyhow::ensure!(w <= MAX_DIM && h <= MAX_DIM, "image {w}x{h} exceeds {MAX_DIM}px; use smaller tiles");
+        anyhow::ensure!(
+            w <= MAX_DIM && h <= MAX_DIM,
+            "image {w}x{h} exceeds {MAX_DIM}px; use smaller tiles"
+        );
         let mut notes = Vec::new();
 
         // What to frame: focus parts, else every visible part.
-        let visible: Vec<usize> = (0..r.meshes.len()).filter(|&i| r.styles[i].visible).collect();
-        let frame_set: Vec<usize> = if r.focus.is_empty() { visible.clone() } else { r.focus.clone() };
+        let visible: Vec<usize> = (0..r.meshes.len())
+            .filter(|&i| r.styles[i].visible)
+            .collect();
+        let frame_set: Vec<usize> = if r.focus.is_empty() {
+            visible.clone()
+        } else {
+            r.focus.clone()
+        };
         // Boxes in placed (posed) coordinates, over every tile's pose, so all tiles share one framing.
-        let pose = |slot: usize, i: usize| -> Mat4 { r.poses.get(slot).and_then(|p| p.get(i)).copied().unwrap_or(Mat4::IDENTITY) };
-        let box_corners = |a: Vec3, b: Vec3| (0..8).map(move |k| Vec3::new(if k & 1 == 0 { a.x } else { b.x }, if k & 2 == 0 { a.y } else { b.y }, if k & 4 == 0 { a.z } else { b.z }));
+        let pose = |slot: usize, i: usize| -> Mat4 {
+            r.poses
+                .get(slot)
+                .and_then(|p| p.get(i))
+                .copied()
+                .unwrap_or(Mat4::IDENTITY)
+        };
+        let box_corners = |a: Vec3, b: Vec3| {
+            (0..8).map(move |k| {
+                Vec3::new(
+                    if k & 1 == 0 { a.x } else { b.x },
+                    if k & 2 == 0 { a.y } else { b.y },
+                    if k & 4 == 0 { a.z } else { b.z },
+                )
+            })
+        };
         let corners = |set: &[usize]| -> Vec<Vec3> {
             let mut v = Vec::new();
             for &i in set {
@@ -376,7 +487,10 @@ impl Renderer {
         };
         let scene_pts = corners(&visible);
         let slots = r.poses.len().max(1);
-        anyhow::ensure!(slots == 1 || slots == n as usize, "poses must be shared or one set per view");
+        anyhow::ensure!(
+            slots == 1 || slots == n as usize,
+            "poses must be shared or one set per view"
+        );
         let slot_of = |k: u32| if slots == 1 { 0 } else { k as usize };
 
         // Uniforms: one camera block per view, one style block per part.
@@ -389,31 +503,57 @@ impl Renderer {
         for (k, v) in r.views.iter().enumerate() {
             let f = match &v.fixed {
                 Some(spec) => camera::build(spec, scene_pts.iter(), aspect, r.tile_h),
-                None => camera::fit(v.dir, r.up, &frame_pts, &scene_pts, aspect, r.zoom, r.perspective, r.tile_h),
+                None => camera::fit(
+                    v.dir,
+                    r.up,
+                    &frame_pts,
+                    &scene_pts,
+                    aspect,
+                    r.zoom,
+                    r.perspective,
+                    r.tile_h,
+                ),
             };
             let light = (-f.dir * 0.8 + f.up * 0.45 - f.right * 0.35).normalize();
             let (clip, on) = match r.section {
-                Some((nrm, d, auto)) if auto && f.dir.dot(nrm) > 0.0 => ([-nrm.x, -nrm.y, -nrm.z, -d], 1.0),
+                Some((nrm, d, auto)) if auto && f.dir.dot(nrm) > 0.0 => {
+                    ([-nrm.x, -nrm.y, -nrm.z, -d], 1.0)
+                }
                 Some((nrm, d, _)) => ([nrm.x, nrm.y, nrm.z, d], 1.0),
                 None => ([0.0; 4], 0.0),
             };
             let u = CameraU {
                 view_proj: f.view_proj.to_cols_array_2d(),
-                eye: [f.eye.x, f.eye.y, f.eye.z, if f.spec.distance.is_some() { 1.0 } else { 0.0 }],
+                eye: [
+                    f.eye.x,
+                    f.eye.y,
+                    f.eye.z,
+                    if f.spec.distance.is_some() { 1.0 } else { 0.0 },
+                ],
                 view_dir: [f.dir.x, f.dir.y, f.dir.z, 0.0],
                 light: [light.x, light.y, light.z, 0.0],
-                viewport: [r.tile_w as f32, r.tile_h as f32, r.edge_px, r.edge_px * 1.15],
+                viewport: [
+                    r.tile_w as f32,
+                    r.tile_h as f32,
+                    r.edge_px,
+                    r.edge_px * 1.15,
+                ],
                 clip,
                 flags: [on, if r.unlit { 1.0 } else { 0.0 }, 0.0, 0.0],
             };
-            cam_bytes[k * cam_stride..k * cam_stride + std::mem::size_of::<CameraU>()].copy_from_slice(bytemuck::bytes_of(&u));
+            cam_bytes[k * cam_stride..k * cam_stride + std::mem::size_of::<CameraU>()]
+                .copy_from_slice(bytemuck::bytes_of(&u));
             fits.push(f);
         }
         let np = r.meshes.len().max(1);
         let mut part_bytes = vec![0u8; part_stride * np * slots];
         for slot in 0..slots {
             for (i, s) in r.styles.iter().enumerate() {
-                let (fa, ea) = if s.ghost { (if r.xray { 0.22 } else { 0.12 }, 0.28) } else { (1.0, 1.0) };
+                let (fa, ea) = if s.ghost {
+                    (if r.xray { 0.22 } else { 0.12 }, 0.28)
+                } else {
+                    (1.0, 1.0)
+                };
                 let cap = [s.color[0] * 0.55, s.color[1] * 0.45, s.color[2] * 0.45, 1.0];
                 let u = PartU {
                     model: pose(slot, i).to_cols_array_2d(),
@@ -422,19 +562,32 @@ impl Renderer {
                     cap,
                 };
                 let o = (slot * np + i) * part_stride;
-                part_bytes[o..o + std::mem::size_of::<PartU>()].copy_from_slice(bytemuck::bytes_of(&u));
+                part_bytes[o..o + std::mem::size_of::<PartU>()]
+                    .copy_from_slice(bytemuck::bytes_of(&u));
             }
         }
         let d = &self.device;
-        let cam_buf = d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("cams"), contents: &cam_bytes, usage: wgpu::BufferUsages::UNIFORM });
-        let part_buf = d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("parts"), contents: &part_bytes, usage: wgpu::BufferUsages::UNIFORM });
+        let cam_buf = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cams"),
+            contents: &cam_bytes,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let part_buf = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("parts"),
+            contents: &part_bytes,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
         let bind = |layout: &wgpu::BindGroupLayout, buf: &wgpu::Buffer, size: usize| {
             d.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
                 layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: buf, offset: 0, size: wgpu::BufferSize::new(size as u64) }),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: buf,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(size as u64),
+                    }),
                 }],
             })
         };
@@ -445,7 +598,12 @@ impl Renderer {
         let clear = if r.backplate.is_some() {
             wgpu::Color::TRANSPARENT
         } else {
-            wgpu::Color { r: bg[0] as f64, g: bg[1] as f64, b: bg[2] as f64, a: if r.background.is_some() { 1.0 } else { 0.0 } }
+            wgpu::Color {
+                r: bg[0] as f64,
+                g: bg[1] as f64,
+                b: bg[2] as f64,
+                a: if r.background.is_some() { 1.0 } else { 0.0 },
+            }
         };
         // Borrow-split: pipelines are fields of self, targets need &mut self.
         self.targets(w, h);
@@ -458,11 +616,17 @@ impl Renderer {
                     view: &t.msaa,
                     depth_slice: None,
                     resolve_target: Some(&t.resolve_view),
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Discard },
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(clear),
+                        store: wgpu::StoreOp::Discard,
+                    },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &t.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
@@ -472,17 +636,35 @@ impl Renderer {
             let show_edges = r.edges != Edges::None;
             for k in 0..n {
                 let (tx, ty) = ((k % cols) * r.tile_w, (k / cols) * r.tile_h);
-                pass.set_viewport(tx as f32, ty as f32, r.tile_w as f32, r.tile_h as f32, 0.0, 1.0);
+                pass.set_viewport(
+                    tx as f32,
+                    ty as f32,
+                    r.tile_w as f32,
+                    r.tile_h as f32,
+                    0.0,
+                    1.0,
+                );
                 pass.set_scissor_rect(tx, ty, r.tile_w, r.tile_h);
                 pass.set_bind_group(0, &cam_bg, &[(k as usize * cam_stride) as u32]);
                 for ghost_pass in [false, true] {
-                    let parts = visible.iter().copied().filter(|&i| r.styles[i].ghost == ghost_pass);
+                    let parts = visible
+                        .iter()
+                        .copied()
+                        .filter(|&i| r.styles[i].ghost == ghost_pass);
                     let parts: Vec<usize> = parts.collect();
-                    pass.set_pipeline(if ghost_pass { &self.mesh_ghost } else { &self.mesh_opaque });
+                    pass.set_pipeline(if ghost_pass {
+                        &self.mesh_ghost
+                    } else {
+                        &self.mesh_opaque
+                    });
                     for &i in &parts {
                         let m = r.meshes[i];
                         if let (Some(vb), Some(ib)) = (&m.vbuf, &m.ibuf) {
-                            pass.set_bind_group(1, &part_bg, &[((slot_of(k) * np + i) * part_stride) as u32]);
+                            pass.set_bind_group(
+                                1,
+                                &part_bg,
+                                &[((slot_of(k) * np + i) * part_stride) as u32],
+                            );
                             pass.set_vertex_buffer(0, vb.slice(..));
                             pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                             pass.draw_indexed(0..m.nidx, 0, 0..1);
@@ -491,24 +673,44 @@ impl Renderer {
                     if !show_edges {
                         continue;
                     }
-                    pass.set_pipeline(if ghost_pass { &self.edge_ghost } else { &self.edge_opaque });
+                    pass.set_pipeline(if ghost_pass {
+                        &self.edge_ghost
+                    } else {
+                        &self.edge_opaque
+                    });
                     for &i in &parts {
                         let m = r.meshes[i];
-                        let count = if r.edges == Edges::All && !ghost_pass { m.n_edges } else { m.n_sharp };
+                        let count = if r.edges == Edges::All && !ghost_pass {
+                            m.n_edges
+                        } else {
+                            m.n_sharp
+                        };
                         if let Some(eb) = &m.ebuf
                             && count > 0
                         {
-                            pass.set_bind_group(1, &part_bg, &[((slot_of(k) * np + i) * part_stride) as u32]);
+                            pass.set_bind_group(
+                                1,
+                                &part_bg,
+                                &[((slot_of(k) * np + i) * part_stride) as u32],
+                            );
                             pass.set_vertex_buffer(0, eb.slice(..));
                             pass.draw(0..6, 0..count);
                         }
                     }
                     if r.silhouettes && !ghost_pass {
-                        pass.set_pipeline(if ghost_pass { &self.sil_ghost } else { &self.sil_opaque });
+                        pass.set_pipeline(if ghost_pass {
+                            &self.sil_ghost
+                        } else {
+                            &self.sil_opaque
+                        });
                         for &i in &parts {
                             let m = r.meshes[i];
                             if let Some(sb) = &m.sbuf {
-                                pass.set_bind_group(1, &part_bg, &[((slot_of(k) * np + i) * part_stride) as u32]);
+                                pass.set_bind_group(
+                                    1,
+                                    &part_bg,
+                                    &[((slot_of(k) * np + i) * part_stride) as u32],
+                                );
                                 pass.set_vertex_buffer(0, sb.slice(..));
                                 pass.draw(0..6, 0..m.n_sil);
                             }
@@ -518,12 +720,25 @@ impl Renderer {
             }
         }
         enc.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo { texture: &t.resolve, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo {
+                texture: &t.resolve,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
             wgpu::TexelCopyBufferInfo {
                 buffer: &t.readback,
-                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(t.padded_row), rows_per_image: Some(h) },
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(t.padded_row),
+                    rows_per_image: Some(h),
+                },
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         self.queue.submit([enc.finish()]);
         let slice = t.readback.slice(..);
@@ -537,7 +752,8 @@ impl Renderer {
         {
             let data = slice.get_mapped_range()?;
             for y in 0..h as usize {
-                let src = &data[y * t.padded_row as usize..y * t.padded_row as usize + w as usize * 4];
+                let src =
+                    &data[y * t.padded_row as usize..y * t.padded_row as usize + w as usize * 4];
                 px[y * w as usize * 4..(y + 1) * w as usize * 4].copy_from_slice(src);
             }
         }
@@ -547,14 +763,20 @@ impl Renderer {
         // Backdrop: the pass cleared to transparent, so composite every tile over the fitted image.
         let t1 = Instant::now();
         if let Some((img, mode)) = &r.backplate {
-            let bgc = r.background.map(|c| c.map(|v| (v * 255.0) as u8)).unwrap_or([255, 255, 255]);
+            let bgc = r
+                .background
+                .map(|c| c.map(|v| (v * 255.0) as u8))
+                .unwrap_or([255, 255, 255]);
             let plate = crate::video::fit(img, r.tile_w, r.tile_h, mode, bgc);
             for k in 0..n {
                 let (tx, ty) = ((k % cols) * r.tile_w, (k / cols) * r.tile_h);
                 for y in 0..r.tile_h {
                     let o = (((ty + y) * w + tx) * 4) as usize;
                     let row = &mut px[o..o + (r.tile_w * 4) as usize];
-                    crate::video::composite_over(row, &plate.rgba[(y * r.tile_w * 4) as usize..((y + 1) * r.tile_w * 4) as usize]);
+                    crate::video::composite_over(
+                        row,
+                        &plate.rgba[(y * r.tile_w * 4) as usize..((y + 1) * r.tile_w * 4) as usize],
+                    );
                 }
             }
         }
@@ -566,40 +788,66 @@ impl Renderer {
             let (tx, ty) = ((k % cols) * r.tile_w, (k / cols) * r.tile_h);
             let f = &fits[k as usize];
             if r.labels {
-                cv.label(tx as i32 + 6 * scale, ty as i32 + 5 * scale, &v.label, scale, [40, 44, 52, 255], [255, 255, 255, 190]);
+                cv.label(
+                    tx as i32 + 6 * scale,
+                    ty as i32 + 5 * scale,
+                    &v.label,
+                    scale,
+                    [40, 44, 52, 255],
+                    [255, 255, 255, 190],
+                );
             }
             // Part labels at a surface point near each part's centre; greedy placement avoids overlaps.
             let mut placed: Vec<(i32, i32, i32, i32)> = Vec::new();
             for (i, name) in &r.part_labels {
-                let c = f.view_proj * Vec4::from((pose(slot_of(k), *i).transform_point3(r.anchors[*i]), 1.0));
+                let c = f.view_proj
+                    * Vec4::from((pose(slot_of(k), *i).transform_point3(r.anchors[*i]), 1.0));
                 if c.w <= 0.0 {
                     continue;
                 }
                 let sx = tx as f32 + (c.x / c.w * 0.5 + 0.5) * r.tile_w as f32;
                 let sy = ty as f32 + (0.5 - c.y / c.w * 0.5) * r.tile_h as f32;
-                if sx < tx as f32 || sx >= (tx + r.tile_w) as f32 || sy < ty as f32 || sy >= (ty + r.tile_h) as f32 {
+                if sx < tx as f32
+                    || sx >= (tx + r.tile_w) as f32
+                    || sy < ty as f32
+                    || sy >= (ty + r.tile_h) as f32
+                {
                     continue; // anchor outside this tile (e.g. a zoomed region): no label
                 }
                 let (tw, th) = Canvas::text_size(name, 2);
                 let (bw, bh) = (tw + 8, th + 8);
                 for dy in [0, 1, -1, 2, -2, 3, -3] {
-                    let x = (sx as i32 - bw / 2).clamp(tx as i32 + 2, (tx + r.tile_w) as i32 - bw - 2);
+                    let x =
+                        (sx as i32 - bw / 2).clamp(tx as i32 + 2, (tx + r.tile_w) as i32 - bw - 2);
                     let y = sy as i32 - bh / 2 + dy * (bh + 2);
                     if y < ty as i32 + 2 || y + bh > (ty + r.tile_h) as i32 - 2 {
                         continue;
                     }
-                    if placed.iter().any(|&(px, py, pw, ph)| x < px + pw && px < x + bw && y < py + ph && py < y + bh) {
+                    if placed.iter().any(|&(px, py, pw, ph)| {
+                        x < px + pw && px < x + bw && y < py + ph && py < y + bh
+                    }) {
                         continue;
                     }
                     placed.push((x, y, bw, bh));
                     if dy != 0 {
                         // leader tick from the label towards the anchor
                         let ly = if dy > 0 { y } else { y + bh };
-                        let (y0, y1) = if (sy as i32) < ly { (sy as i32, ly) } else { (ly, sy as i32) };
+                        let (y0, y1) = if (sy as i32) < ly {
+                            (sy as i32, ly)
+                        } else {
+                            (ly, sy as i32)
+                        };
                         cv.rect(sx as i32, y0, 1, y1 - y0, [20, 60, 140, 200]);
                     }
                     cv.rect(sx as i32 - 2, sy as i32 - 2, 5, 5, [20, 60, 140, 230]);
-                    cv.label(x + 4, y + 4, name, 2, [255, 255, 255, 255], [20, 60, 140, 215]);
+                    cv.label(
+                        x + 4,
+                        y + 4,
+                        name,
+                        2,
+                        [255, 255, 255, 255],
+                        [20, 60, 140, 215],
+                    );
                     break;
                 }
             }
@@ -608,15 +856,35 @@ impl Renderer {
             {
                 let target_mm = mpp * r.tile_w as f32 * 0.2;
                 let p = 10f32.powf(target_mm.log10().floor());
-                let nice = [1.0, 2.0, 5.0, 10.0].iter().map(|m| m * p).rfind(|v| *v <= target_mm).unwrap_or(p);
+                let nice = [1.0, 2.0, 5.0, 10.0]
+                    .iter()
+                    .map(|m| m * p)
+                    .rfind(|v| *v <= target_mm)
+                    .unwrap_or(p);
                 let len_px = (nice / mpp).round() as i32;
                 let x0 = tx as i32 + 8 * scale;
                 let y0 = (ty + r.tile_h) as i32 - 8 * scale;
-                cv.rect(x0 - 3, y0 - 12 * scale - 3, len_px + 6, 12 * scale + 3 * scale + 6, [255, 255, 255, 170]);
+                cv.rect(
+                    x0 - 3,
+                    y0 - 12 * scale - 3,
+                    len_px + 6,
+                    12 * scale + 3 * scale + 6,
+                    [255, 255, 255, 170],
+                );
                 cv.rect(x0, y0, len_px, scale, [30, 30, 30, 255]);
                 cv.rect(x0, y0 - 3 * scale, scale, 4 * scale, [30, 30, 30, 255]);
-                cv.rect(x0 + len_px - scale, y0 - 3 * scale, scale, 4 * scale, [30, 30, 30, 255]);
-                let txt = if nice >= 1.0 { format!("{} MM", nice as i64) } else { format!("{nice} MM") };
+                cv.rect(
+                    x0 + len_px - scale,
+                    y0 - 3 * scale,
+                    scale,
+                    4 * scale,
+                    [30, 30, 30, 255],
+                );
+                let txt = if nice >= 1.0 {
+                    format!("{} MM", nice as i64)
+                } else {
+                    format!("{nice} MM")
+                };
                 cv.text(x0, y0 - 12 * scale, &txt, scale, [30, 30, 30, 255]);
             }
         }
@@ -633,9 +901,22 @@ impl Renderer {
             notes.push("no visible parts".into());
         }
         let opaque = r.background.is_some() || r.backplate.is_some();
-        let (png, rgba) = if r.raw { (Vec::new(), Some(px)) } else { (encode_png(&px, w, h, opaque)?, None) };
+        let (png, rgba) = if r.raw {
+            (Vec::new(), Some(px))
+        } else {
+            (encode_png(&px, w, h, opaque)?, None)
+        };
         let encode_ms = t1.elapsed().as_secs_f64() * 1e3;
-        Ok(RenderOut { png, width: w, height: h, gpu_ms, encode_ms, notes, cams: fits.iter().map(|f| f.spec).collect(), rgba })
+        Ok(RenderOut {
+            png,
+            width: w,
+            height: h,
+            gpu_ms,
+            encode_ms,
+            notes,
+            cams: fits.iter().map(|f| f.spec).collect(),
+            rgba,
+        })
     }
 }
 
@@ -648,7 +929,12 @@ fn encode_png(rgba: &[u8], w: u32, h: u32, opaque: bool) -> anyhow::Result<Vec<u
         if opaque {
             e.set_color(png::ColorType::Rgb);
             let mut wr = e.write_header()?;
-            let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+            let rgb: Vec<u8> = rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| [p[0], p[1], p[2]])
+                .collect();
             wr.write_image_data(&rgb)?;
         } else {
             e.set_color(png::ColorType::Rgba);
@@ -658,4 +944,3 @@ fn encode_png(rgba: &[u8], w: u32, h: u32, opaque: bool) -> anyhow::Result<Vec<u
     }
     Ok(out)
 }
-

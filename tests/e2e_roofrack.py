@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""End-to-end test of the cad-render-mcp MCP server over stdio (stdlib only).
+"""Private end-to-end test against the original roof-rack STEP files (testdata/, not published).
+Skips when the fixtures are absent; the public suite is tests/e2e_demo.py.
 
 Replays the kind of calls the roof-rack session made against Fusion (open, multi-view renders,
 section, highlight, inspect bend radii, measure clearance, clash check, reload after a file
 change) and checks every response.
 
-usage: tests/mcp_e2e.py [path/to/cad-render-mcp] [--out DIR]
+usage: tests/e2e_roofrack.py [path/to/cad-render-mcp] [--out DIR]
 """
 import base64, json, os, shutil, subprocess, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = next((a for a in sys.argv[1:] if not a.startswith("--") and os.path.isfile(a)), os.path.join(ROOT, "target/release/cad-render-mcp"))
 OUT = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else tempfile.mkdtemp(prefix="cad-render-e2e-")
+os.makedirs(OUT, exist_ok=True)
 ASM = os.path.join(ROOT, "testdata/roofrack_v26a.step")
 PLATE = os.path.join(ROOT, "testdata/v26a_side_plate_L_5083_5mm.step")
 
@@ -90,6 +92,9 @@ def step(c, label, tool, args, expect_image=False):
 
 
 def main():
+    if not os.path.exists(ASM):
+        print(f"skip: {ASM} not present (private fixture)")
+        return
     print(f"binary: {BIN}\nimages: {OUT}")
     t0 = time.perf_counter()
     c = Client([BIN])

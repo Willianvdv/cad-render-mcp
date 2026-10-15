@@ -42,6 +42,7 @@ int ss_common(const ss_doc* a, int ia, const double* ma, const ss_doc* b, int ib
 int ss_points_inside(const ss_doc* a, int ia, const double* ma, const ss_doc* b, int ib, const double* mb, int max_pts);
 void ss_str_free(char* s);
 const char* ss_occt_version(void);
+int ss_write_demo_step(const char* path, char* err, size_t errlen);
 
 #ifdef __cplusplus
 }

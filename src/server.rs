@@ -1,9 +1,9 @@
 //! MCP tools: open, render, parts, inspect, measure, clash, move, motion, save_view, saved, close.
 
 use crate::camera::{self, CamSpec, Up};
+use crate::photo;
 use crate::project::{self, Project, SavedPose, SavedView};
 use crate::render::{Edges, PartStyle, RenderReq, Renderer};
-use crate::photo;
 use crate::scene::{self, Scene};
 use base64::Engine;
 use glam::{Mat4, Vec3};
@@ -26,7 +26,10 @@ pub struct App {
     /// Parameters and resolved cameras of the last render (for `save_view`).
     pub last_render: Option<(serde_json::Value, Vec<CamSpec>)>,
     /// Decoded background images by path (reloaded when the file changes).
-    pub images: std::collections::HashMap<std::path::PathBuf, (Option<std::time::SystemTime>, Arc<crate::video::Frame>)>,
+    pub images: std::collections::HashMap<
+        std::path::PathBuf,
+        (Option<std::time::SystemTime>, Arc<crate::video::Frame>),
+    >,
 }
 
 impl App {
@@ -35,7 +38,15 @@ impl App {
             Ok(r) => (Some(r), None),
             Err(e) => (None, Some(format!("GPU init failed: {e:#}"))),
         };
-        App { renderer, renderer_err, scene: Scene::new(), project: Project::default(), project_path: None, last_render: None, images: Default::default() }
+        App {
+            renderer,
+            renderer_err,
+            scene: Scene::new(),
+            project: Project::default(),
+            project_path: None,
+            last_render: None,
+            images: Default::default(),
+        }
     }
 
     /// Load (or reuse) a background image.
@@ -53,16 +64,19 @@ impl App {
     }
 
     fn save_project(&self) -> anyhow::Result<String> {
-        let path = self.project_path.as_ref().ok_or_else(|| anyhow::anyhow!("no project file: call open first"))?;
+        let path = self
+            .project_path
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no project file: call open first"))?;
         self.project.save(path)?;
         Ok(path.display().to_string())
     }
 
     /// Reload changed files; returns a note for the response.
     fn refresh(&mut self) -> anyhow::Result<Option<String>> {
-        let Some(r) = self.renderer.as_ref() else { return Ok(None) };
-        let changed = self.scene.refresh(r)?;
-        Ok((!changed.is_empty()).then(|| format!("reloaded (file changed): {}", changed.join(", "))))
+        let changed = self.scene.refresh(self.renderer.as_ref())?;
+        Ok((!changed.is_empty())
+            .then(|| format!("reloaded (file changed): {}", changed.join(", "))))
     }
 }
 
@@ -426,7 +440,9 @@ fn axis_vec(a: &Axis) -> anyhow::Result<Vec3> {
 fn motion_at(t: f32, translate: Option<[f32; 3]>, rotate: Option<(Vec3, f32, Vec3)>) -> Mat4 {
     let mut m = Mat4::IDENTITY;
     if let Some((axis, deg, origin)) = rotate {
-        m = Mat4::from_translation(origin) * Mat4::from_axis_angle(axis, (deg * t).to_radians()) * Mat4::from_translation(-origin);
+        m = Mat4::from_translation(origin)
+            * Mat4::from_axis_angle(axis, (deg * t).to_radians())
+            * Mat4::from_translation(-origin);
     }
     if let Some(v) = translate {
         m = Mat4::from_translation(Vec3::from(v) * t) * m;
@@ -434,43 +450,71 @@ fn motion_at(t: f32, translate: Option<[f32; 3]>, rotate: Option<(Vec3, f32, Vec
     m
 }
 
-fn resolve_rotate(sc: &Scene, set: &[usize], r: &Option<RotateSpec>) -> anyhow::Result<Option<(Vec3, f32, Vec3)>> {
+fn resolve_rotate(
+    sc: &Scene,
+    set: &[usize],
+    r: &Option<RotateSpec>,
+) -> anyhow::Result<Option<(Vec3, f32, Vec3)>> {
     let Some(r) = r else { return Ok(None) };
     let origin = match r.origin {
         Some(o) => Vec3::from(o),
-        None => sc.bounds(set).map(|(lo, hi)| (lo + hi) * 0.5).unwrap_or(Vec3::ZERO),
+        None => sc
+            .bounds(set)
+            .map(|(lo, hi)| (lo + hi) * 0.5)
+            .unwrap_or(Vec3::ZERO),
     };
     Ok(Some((axis_vec(&r.axis)?, r.deg, origin)))
 }
 
 fn short_path(sc: &Scene, i: usize) -> String {
     let p = &sc.parts[i].path;
-    let s = p.split_once('/').map(|(_, rest)| rest).filter(|r| !r.is_empty()).unwrap_or(p);
+    let s = p
+        .split_once('/')
+        .map(|(_, rest)| rest)
+        .filter(|r| !r.is_empty())
+        .unwrap_or(p);
     format!("{} {}", sc.parts[i].id, s)
 }
-
 
 fn parse_hex(s: &str) -> anyhow::Result<[f32; 3]> {
     let h = s.trim().trim_start_matches('#');
     anyhow::ensure!(h.len() == 6, "colour must be #rrggbb, got {s:?}");
     let v = u32::from_str_radix(h, 16)?;
-    Ok([((v >> 16) & 255) as f32 / 255.0, ((v >> 8) & 255) as f32 / 255.0, (v & 255) as f32 / 255.0])
+    Ok([
+        ((v >> 16) & 255) as f32 / 255.0,
+        ((v >> 8) & 255) as f32 / 255.0,
+        (v & 255) as f32 / 255.0,
+    ])
 }
 
 const PALETTE: &[[f32; 3]] = &[
-    [0.27, 0.51, 0.71], [0.89, 0.47, 0.20], [0.35, 0.63, 0.35], [0.80, 0.30, 0.33], [0.55, 0.45, 0.70],
-    [0.60, 0.45, 0.35], [0.85, 0.55, 0.75], [0.50, 0.50, 0.50], [0.75, 0.73, 0.30], [0.25, 0.70, 0.75],
+    [0.27, 0.51, 0.71],
+    [0.89, 0.47, 0.20],
+    [0.35, 0.63, 0.35],
+    [0.80, 0.30, 0.33],
+    [0.55, 0.45, 0.70],
+    [0.60, 0.45, 0.35],
+    [0.85, 0.55, 0.75],
+    [0.50, 0.50, 0.50],
+    [0.75, 0.73, 0.30],
+    [0.25, 0.70, 0.75],
 ];
 const DEFAULT_PART: [f32; 3] = [0.74, 0.77, 0.81];
 
 /// File colours often come out near-black (unset appearance); lift them so shading stays readable.
 fn usable(c: [f32; 3]) -> [f32; 3] {
     let l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-    if l < 0.18 { [c[0] * 0.5 + 0.3, c[1] * 0.5 + 0.3, c[2] * 0.5 + 0.32] } else { c }
+    if l < 0.18 {
+        [c[0] * 0.5 + 0.3, c[1] * 0.5 + 0.3, c[2] * 0.5 + 0.32]
+    } else {
+        c
+    }
 }
 
 fn tool_err(e: anyhow::Error) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::error(vec![ContentBlock::text(format!("error: {e:#}"))]))
+    Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+        "error: {e:#}"
+    ))]))
 }
 
 fn dims(lo: Vec3, hi: Vec3) -> String {
@@ -480,7 +524,10 @@ fn dims(lo: Vec3, hi: Vec3) -> String {
 
 impl CadRender {
     pub fn new(app: App) -> Self {
-        Self { app: Arc::new(Mutex::new(app)), tool_router: Self::tool_router() }
+        Self {
+            app: Arc::new(Mutex::new(app)),
+            tool_router: Self::tool_router(),
+        }
     }
 
     /// Run `f` on the blocking pool with the app locked (OCCT and GPU work are synchronous).
@@ -507,8 +554,20 @@ pub fn parts_table(sc: &Scene, set: &[usize]) -> String {
     let _ = writeln!(s, "id | name | file | size mm (x y z) | tris");
     for &i in set {
         let p = &sc.parts[i];
-        let size = if p.empty { "(no faces)".to_string() } else { dims(p.bmin, p.bmax) };
-        let _ = writeln!(s, "{} | {} | {} | {} | {}", p.id, p.path, sc.file_label(p.file), size, p.gpu.tris);
+        let size = if p.empty {
+            "(no faces)".to_string()
+        } else {
+            dims(p.bmin, p.bmax)
+        };
+        let _ = writeln!(
+            s,
+            "{} | {} | {} | {} | {}",
+            p.id,
+            p.path,
+            sc.file_label(p.file),
+            size,
+            p.gpu.tris
+        );
     }
     s
 }
@@ -528,8 +587,7 @@ pub fn do_open(app: &mut App, p: &OpenParams) -> anyhow::Result<String> {
     if let Some(a) = p.angle_deg {
         app.scene.ang_defl = a.to_radians();
     }
-    let gpu = app.renderer.as_ref().ok_or_else(|| anyhow::anyhow!(app.renderer_err.clone().unwrap_or_default()))?;
-    let reps = app.scene.load(&files, gpu)?;
+    let reps = app.scene.load(&files, app.renderer.as_ref())?;
     let mut s = String::new();
     let ppath = match &p.project {
         Some(pp) => std::path::PathBuf::from(pp),
@@ -548,10 +606,26 @@ pub fn do_open(app: &mut App, p: &OpenParams) -> anyhow::Result<String> {
     }
     let all: Vec<usize> = (0..app.scene.parts.len()).collect();
     if let Some((lo, hi)) = app.scene.bounds(&all) {
-        let _ = writeln!(s, "scene: {} parts, bbox [{:.1}, {:.1}, {:.1}] .. [{:.1}, {:.1}, {:.1}] ({} mm)", all.len(), lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, dims(lo, hi));
+        let _ = writeln!(
+            s,
+            "scene: {} parts, bbox [{:.1}, {:.1}, {:.1}] .. [{:.1}, {:.1}, {:.1}] ({} mm)",
+            all.len(),
+            lo.x,
+            lo.y,
+            lo.z,
+            hi.x,
+            hi.y,
+            hi.z,
+            dims(lo, hi)
+        );
     }
     let _ = writeln!(s, "total {:.0} ms", t0.elapsed().as_secs_f64() * 1e3);
-    let _ = writeln!(s, "project {}:\n{}\n", ppath.display(), app.project.summary());
+    let _ = writeln!(
+        s,
+        "project {}:\n{}\n",
+        ppath.display(),
+        app.project.summary()
+    );
     s += &parts_table(&app.scene, &all);
     Ok(s)
 }
@@ -576,15 +650,42 @@ pub struct Frames {
 
 /// Merge a saved view into the call's parameters; returns its frozen cameras unless the call
 /// changes the framing.
-fn resolve_preset(app: &App, p: &RenderParams) -> anyhow::Result<(RenderParams, Option<Vec<CamSpec>>, Option<String>)> {
-    let Some(name) = &p.preset else { return Ok((p.clone(), None, None)) };
+fn resolve_preset(
+    app: &App,
+    p: &RenderParams,
+) -> anyhow::Result<(RenderParams, Option<Vec<CamSpec>>, Option<String>)> {
+    let Some(name) = &p.preset else {
+        return Ok((p.clone(), None, None));
+    };
     let sv = app.project.views.get(name).ok_or_else(|| {
-        anyhow::anyhow!("no saved view {name:?}; saved: {}", app.project.views.keys().cloned().collect::<Vec<_>>().join(", "))
+        anyhow::anyhow!(
+            "no saved view {name:?}; saved: {}",
+            app.project
+                .views
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     })?;
-    let merged: RenderParams = serde_json::from_value(project::overlay(&sv.params, &serde_json::to_value(p)?))?;
-    let reframed = p.views.is_some() || p.region.is_some() || p.focus.is_some() || p.zoom.is_some() || p.perspective.is_some() || p.up.is_some() || p.cameras.is_some();
+    let merged: RenderParams =
+        serde_json::from_value(project::overlay(&sv.params, &serde_json::to_value(p)?))?;
+    let reframed = p.views.is_some()
+        || p.region.is_some()
+        || p.focus.is_some()
+        || p.zoom.is_some()
+        || p.perspective.is_some()
+        || p.up.is_some()
+        || p.cameras.is_some();
     let cams = if reframed { None } else { sv.cameras.clone() };
-    let note = Some(format!("view {name:?}{}", if cams.is_some() { " (frozen camera)" } else { "" }));
+    let note = Some(format!(
+        "view {name:?}{}",
+        if cams.is_some() {
+            " (frozen camera)"
+        } else {
+            ""
+        }
+    ));
     Ok((merged, cams, note))
 }
 
@@ -592,10 +693,17 @@ pub fn do_render(app: &mut App, p: &RenderParams) -> anyhow::Result<Rendered> {
     do_render_frames(app, p, None)
 }
 
-pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frames>) -> anyhow::Result<Rendered> {
+pub fn do_render_frames(
+    app: &mut App,
+    p_in: &RenderParams,
+    frames: Option<Frames>,
+) -> anyhow::Result<Rendered> {
     let t0 = Instant::now();
     let reload = app.refresh()?;
-    anyhow::ensure!(!app.scene.parts.is_empty(), "nothing loaded: call open first");
+    anyhow::ensure!(
+        !app.scene.parts.is_empty(),
+        "nothing loaded: call open first"
+    );
     let mut notes: Vec<String> = reload.into_iter().collect();
     let (p_owned, preset_cams, preset_note) = resolve_preset(app, p_in)?;
     notes.extend(preset_note);
@@ -605,26 +713,49 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
         None => None,
     };
     let fit_mode = p.background_fit.clone().unwrap_or_else(|| "cover".into());
-    anyhow::ensure!(fit_mode == "cover" || fit_mode == "contain", "background_fit must be cover or contain");
+    anyhow::ensure!(
+        fit_mode == "cover" || fit_mode == "contain",
+        "background_fit must be cover or contain"
+    );
     let sc = &app.scene;
     let up = Up::parse(p.up.as_deref())?;
     let view_specs = p.views.clone().unwrap_or_else(|| vec!["iso".into()]);
-    anyhow::ensure!(!view_specs.is_empty() && view_specs.len() <= 16, "1..16 views");
+    anyhow::ensure!(
+        !view_specs.is_empty() && view_specs.len() <= 16,
+        "1..16 views"
+    );
     let mut views = match p.cameras.clone().or(preset_cams) {
         Some(cams) => cams
             .into_iter()
             .enumerate()
             .map(|(k, c)| camera::View {
-                label: view_specs.get(k).map(|v| v.to_uppercase()).unwrap_or_else(|| format!("VIEW {}", k + 1)),
+                label: view_specs
+                    .get(k)
+                    .map(|v| v.to_uppercase())
+                    .unwrap_or_else(|| format!("VIEW {}", k + 1)),
                 dir: Vec3::from(c.dir),
                 fixed: Some(c),
             })
             .collect(),
-        None => view_specs.iter().map(|v| camera::parse_view(v, up)).collect::<anyhow::Result<Vec<_>>>()?,
+        None => view_specs
+            .iter()
+            .map(|v| camera::parse_view(v, up))
+            .collect::<anyhow::Result<Vec<_>>>()?,
     };
     if let Some(f) = &frames {
-        let base = views.into_iter().next().ok_or_else(|| anyhow::anyhow!("no view"))?;
-        views = f.labels.iter().map(|l| camera::View { label: l.clone(), dir: base.dir, fixed: base.fixed }).collect();
+        let base = views
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no view"))?;
+        views = f
+            .labels
+            .iter()
+            .map(|l| camera::View {
+                label: l.clone(),
+                dir: base.dir,
+                fixed: base.fixed,
+            })
+            .collect();
     }
     let n = views.len() as u32;
     let def_w = match n {
@@ -665,14 +796,18 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
         }
     }
     let style = p.style.as_deref().unwrap_or("shaded");
-    anyhow::ensure!(["shaded", "xray", "lines"].contains(&style), "style must be shaded, xray or lines");
+    anyhow::ensure!(
+        ["shaded", "xray", "lines"].contains(&style),
+        "style must be shaded, xray or lines"
+    );
     let color_by = p.color_by.as_deref().unwrap_or("file");
     let styles: Vec<PartStyle> = sc
         .parts
         .iter()
         .enumerate()
         .map(|(i, part)| {
-            let visible = !part.empty && show.as_ref().is_none_or(|s| s.contains(&i)) && !hide.contains(&i);
+            let visible =
+                !part.empty && show.as_ref().is_none_or(|s| s.contains(&i)) && !hide.contains(&i);
             let mut color = match color_by {
                 "part" => PALETTE[i % PALETTE.len()],
                 "uniform" => DEFAULT_PART,
@@ -686,9 +821,20 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
             if style == "lines" {
                 color = [1.0, 1.0, 1.0];
             }
-            let ghosted = style == "xray" || ghost.contains(&i) || highlight.as_ref().is_some_and(|h| !h.contains(&i));
-            let edge = if style == "lines" { [0.1, 0.1, 0.12] } else { [color[0] * 0.25, color[1] * 0.25, color[2] * 0.27] };
-            PartStyle { visible, ghost: ghosted, color, edge }
+            let ghosted = style == "xray"
+                || ghost.contains(&i)
+                || highlight.as_ref().is_some_and(|h| !h.contains(&i));
+            let edge = if style == "lines" {
+                [0.1, 0.1, 0.12]
+            } else {
+                [color[0] * 0.25, color[1] * 0.25, color[2] * 0.27]
+            };
+            PartStyle {
+                visible,
+                ghost: ghosted,
+                color,
+                edge,
+            }
         })
         .collect();
     let vis: Vec<usize> = (0..styles.len()).filter(|&i| styles[i].visible).collect();
@@ -706,7 +852,10 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
             let nrm = nrm.normalize();
             let off = match s.offset {
                 Some(o) => o,
-                None => sc.bounds(&vis).map(|(lo, hi)| ((lo + hi) * 0.5).dot(nrm)).unwrap_or(0.0),
+                None => sc
+                    .bounds(&vis)
+                    .map(|(lo, hi)| ((lo + hi) * 0.5).dot(nrm))
+                    .unwrap_or(0.0),
             };
             match s.remove.as_deref().unwrap_or("auto") {
                 "auto" => Some((nrm, off, true)),
@@ -727,11 +876,19 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
         Some(h) => Some(parse_hex(h)?),
         None => Some([0.957, 0.961, 0.969]),
     };
-    let part_labels = if p.part_labels.unwrap_or(false) {
-        vis.iter().map(|&i| (i, sc.parts[i].id.clone())).collect()
+    let part_labels: Vec<(usize, String)> = if p.part_labels.unwrap_or(false) {
+        // Label what the call is about: ghosted parts (highlight/ghost/xray) stay unlabelled
+        // unless everything is ghosted.
+        let solid: Vec<usize> = vis.iter().copied().filter(|&i| !styles[i].ghost).collect();
+        let chosen = if solid.is_empty() { vis.clone() } else { solid };
+        chosen
+            .iter()
+            .map(|&i| (i, sc.parts[i].id.clone()))
+            .collect()
     } else {
         Vec::new()
     };
+    let labelled: Vec<usize> = part_labels.iter().map(|(i, _)| *i).collect();
     let req = RenderReq {
         views,
         tile_w,
@@ -745,7 +902,12 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
         boxes: sc.parts.iter().map(|p| (p.bmin, p.bmax)).collect(),
         anchors: sc.parts.iter().map(|p| p.anchor).collect(),
         focus,
-        region: p.region.map(|b| (Vec3::new(b[0], b[1], b[2]).min(Vec3::new(b[3], b[4], b[5])), Vec3::new(b[0], b[1], b[2]).max(Vec3::new(b[3], b[4], b[5])))),
+        region: p.region.map(|b| {
+            (
+                Vec3::new(b[0], b[1], b[2]).min(Vec3::new(b[3], b[4], b[5])),
+                Vec3::new(b[0], b[1], b[2]).max(Vec3::new(b[3], b[4], b[5])),
+            )
+        }),
         edges,
         silhouettes: p.silhouettes.unwrap_or(true),
         edge_px: p.edge_width.unwrap_or(1.6).clamp(0.5, 8.0),
@@ -766,7 +928,10 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
     let labels_out: Vec<String> = req.views.iter().map(|v| v.label.clone()).collect();
     let styles_out = req.styles.clone();
     let poses_out = req.poses[0].clone();
-    let renderer = app.renderer.as_mut().ok_or_else(|| anyhow::anyhow!(app.renderer_err.clone().unwrap_or_default()))?;
+    let renderer = app
+        .renderer
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!(app.renderer_err.clone().unwrap_or_default()))?;
     let out = renderer.render(&req)?;
     notes.extend(out.notes);
     if let Some(path) = &p.save {
@@ -795,21 +960,56 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
         out.png.len() / 1024
     );
     if let Some((nrm, off, auto)) = section {
-        let side = if auto { "camera-facing half removed per view" } else { "+normal side removed" };
-        let _ = write!(text, "; section n=[{:.2},{:.2},{:.2}] at {:.1} mm ({side}, cut faces in cap colour)", nrm.x, nrm.y, nrm.z, off);
+        let side = if auto {
+            "camera-facing half removed per view"
+        } else {
+            "+normal side removed"
+        };
+        let _ = write!(
+            text,
+            "; section n=[{:.2},{:.2},{:.2}] at {:.1} mm ({side}, cut faces in cap colour)",
+            nrm.x, nrm.y, nrm.z, off
+        );
     }
     if p.part_labels.unwrap_or(false) {
         // Shorten paths by the common assembly prefix to keep the legend compact.
-        let paths: Vec<&str> = vis.iter().map(|&i| app.scene.parts[i].path.as_str()).collect();
-        let prefix = paths.first().and_then(|p| p.rfind('/').map(|k| &p[..=k])).filter(|pre| paths.iter().all(|p| p.starts_with(pre))).unwrap_or("");
-        let legend: Vec<String> = vis.iter().map(|&i| format!("{}={}", app.scene.parts[i].id, &app.scene.parts[i].path[prefix.len()..])).collect();
+        let paths: Vec<&str> = labelled
+            .iter()
+            .map(|&i| app.scene.parts[i].path.as_str())
+            .collect();
+        let prefix = paths
+            .first()
+            .and_then(|p| p.rfind('/').map(|k| &p[..=k]))
+            .filter(|pre| paths.iter().all(|p| p.starts_with(pre)))
+            .unwrap_or("");
+        let legend: Vec<String> = labelled
+            .iter()
+            .map(|&i| {
+                format!(
+                    "{}={}",
+                    app.scene.parts[i].id,
+                    &app.scene.parts[i].path[prefix.len()..]
+                )
+            })
+            .collect();
         let _ = write!(text, "\nlabels: {}", legend.join(", "));
     }
     for nn in notes {
         let _ = write!(text, "\nnote: {nn}");
     }
-    let frame = out.rgba.map(|rgba| crate::video::Frame { w: out.width, h: out.height, rgba });
-    Ok(Rendered { png: out.png, text, cams: out.cams, styles: styles_out, poses: poses_out, frame })
+    let frame = out.rgba.map(|rgba| crate::video::Frame {
+        w: out.width,
+        h: out.height,
+        rgba,
+    });
+    Ok(Rendered {
+        png: out.png,
+        text,
+        cams: out.cams,
+        styles: styles_out,
+        poses: poses_out,
+        frame,
+    })
 }
 
 fn one(sc: &Scene, s: &str) -> anyhow::Result<usize> {
@@ -820,7 +1020,11 @@ fn one(sc: &Scene, s: &str) -> anyhow::Result<usize> {
         _ => anyhow::bail!(
             "{s:?} matches {} parts ({}); use an id",
             ix.len(),
-            ix.iter().take(8).map(|&i| format!("{} {}", sc.parts[i].id, sc.parts[i].path)).collect::<Vec<_>>().join(", ")
+            ix.iter()
+                .take(8)
+                .map(|&i| format!("{} {}", sc.parts[i].id, sc.parts[i].path))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
     }
 }
@@ -852,7 +1056,19 @@ pub fn do_clash(app: &mut App, p: &ClashParams) -> anyhow::Result<String> {
                 && sc.interferes_at(a, sc.parts[a].pose, b, sc.parts[b].pose)
             {
                 let (lo, hi) = (amin.max(bmin), amax.min(bmax));
-                overlaps.push((a, b, f64::INFINITY, [lo.x as f64, lo.y as f64, lo.z as f64, hi.x as f64, hi.y as f64, hi.z as f64]));
+                overlaps.push((
+                    a,
+                    b,
+                    f64::INFINITY,
+                    [
+                        lo.x as f64,
+                        lo.y as f64,
+                        lo.z as f64,
+                        hi.x as f64,
+                        hi.y as f64,
+                        hi.z as f64,
+                    ],
+                ));
                 continue;
             }
             match common {
@@ -887,7 +1103,11 @@ pub fn do_clash(app: &mut App, p: &ClashParams) -> anyhow::Result<String> {
                 na.id, na.path, nb.id, nb.path, bb[0], bb[1], bb[2], bb[3], bb[4], bb[5]
             );
         } else if v.is_nan() {
-            let _ = writeln!(s, "CHECK FAILED  {} {} <-> {} {} (boolean error)", na.id, na.path, nb.id, nb.path);
+            let _ = writeln!(
+                s,
+                "CHECK FAILED  {} {} <-> {} {} (boolean error)",
+                na.id, na.path, nb.id, nb.path
+            );
         } else {
             let _ = writeln!(
                 s,
@@ -897,7 +1117,11 @@ pub fn do_clash(app: &mut App, p: &ClashParams) -> anyhow::Result<String> {
         }
     }
     for (a, b) in &touching {
-        let _ = writeln!(s, "touch  {} {} <-> {} {}", sc.parts[*a].id, sc.parts[*a].path, sc.parts[*b].id, sc.parts[*b].path);
+        let _ = writeln!(
+            s,
+            "touch  {} {} <-> {} {}",
+            sc.parts[*a].id, sc.parts[*a].path, sc.parts[*b].id, sc.parts[*b].path
+        );
     }
     Ok(s)
 }
@@ -906,7 +1130,12 @@ pub fn do_move(app: &mut App, p: &MoveParams) -> anyhow::Result<String> {
     app.refresh()?;
     let mut s = String::new();
     if let Some(name) = &p.pose {
-        let pose = app.project.poses.get(name).ok_or_else(|| anyhow::anyhow!("no saved pose {name:?}"))?.clone();
+        let pose = app
+            .project
+            .poses
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("no saved pose {name:?}"))?
+            .clone();
         let mut n = 0;
         for part in app.scene.parts.iter_mut() {
             if let Some(m) = pose.parts.get(&part.path) {
@@ -919,39 +1148,80 @@ pub fn do_move(app: &mut App, p: &MoveParams) -> anyhow::Result<String> {
     let sel: Option<Vec<usize>> = match &p.parts {
         Some(l) => {
             let (ix, missing) = app.scene.select(l);
-            anyhow::ensure!(missing.is_empty(), "no part matched: {}", missing.join(", "));
+            anyhow::ensure!(
+                missing.is_empty(),
+                "no part matched: {}",
+                missing.join(", ")
+            );
             Some(ix)
         }
         None => None,
     };
     if p.reset.unwrap_or(false) {
-        let set = sel.clone().unwrap_or_else(|| (0..app.scene.parts.len()).collect());
+        let set = sel
+            .clone()
+            .unwrap_or_else(|| (0..app.scene.parts.len()).collect());
         for &i in &set {
             app.scene.parts[i].pose = Mat4::IDENTITY;
         }
         let _ = writeln!(s, "reset {} parts", set.len());
     }
     if p.translate.is_some() || p.rotate.is_some() {
-        let set = sel.clone().ok_or_else(|| anyhow::anyhow!("parts required to move"))?;
+        let set = sel
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("parts required to move"))?;
         let rot = resolve_rotate(&app.scene, &set, &p.rotate)?;
         let m = motion_at(1.0, p.translate, rot);
         for &i in &set {
             let part = &mut app.scene.parts[i];
-            part.pose = if p.absolute.unwrap_or(false) { m } else { m * part.pose };
+            part.pose = if p.absolute.unwrap_or(false) {
+                m
+            } else {
+                m * part.pose
+            };
         }
         let _ = writeln!(s, "moved {} parts", set.len());
     }
-    let posed: Vec<usize> = (0..app.scene.parts.len()).filter(|&i| app.scene.parts[i].pose != Mat4::IDENTITY).collect();
+    let posed: Vec<usize> = (0..app.scene.parts.len())
+        .filter(|&i| app.scene.parts[i].pose != Mat4::IDENTITY)
+        .collect();
     for &i in &posed {
         let (lo, hi) = app.scene.world_box(i);
         let t = app.scene.parts[i].pose.w_axis;
-        let _ = writeln!(s, "  {}: offset [{:.1}, {:.1}, {:.1}], bbox [{:.1}, {:.1}, {:.1}] .. [{:.1}, {:.1}, {:.1}]", short_path(&app.scene, i), t.x, t.y, t.z, lo.x, lo.y, lo.z, hi.x, hi.y, hi.z);
+        let _ = writeln!(
+            s,
+            "  {}: offset [{:.1}, {:.1}, {:.1}], bbox [{:.1}, {:.1}, {:.1}] .. [{:.1}, {:.1}, {:.1}]",
+            short_path(&app.scene, i),
+            t.x,
+            t.y,
+            t.z,
+            lo.x,
+            lo.y,
+            lo.z,
+            hi.x,
+            hi.y,
+            hi.z
+        );
     }
     let _ = writeln!(s, "{} parts away from their file position", posed.len());
     if let Some(name) = &p.save_pose {
         let set = sel.unwrap_or(posed);
-        let parts = set.iter().map(|&i| (app.scene.parts[i].path.clone(), app.scene.parts[i].pose.to_cols_array())).collect();
-        app.project.poses.insert(name.clone(), SavedPose { parts, note: p.note.clone() });
+        let parts = set
+            .iter()
+            .map(|&i| {
+                (
+                    app.scene.parts[i].path.clone(),
+                    app.scene.parts[i].pose.to_cols_array(),
+                )
+            })
+            .collect();
+        app.project.poses.insert(
+            name.clone(),
+            SavedPose {
+                parts,
+                note: p.note.clone(),
+            },
+        );
         let _ = writeln!(s, "saved pose {name:?} in {}", app.save_project()?);
     }
     Ok(s)
@@ -984,21 +1254,43 @@ pub fn resolve_motion(app: &App, p_in: &MotionParams) -> anyhow::Result<MotionSp
     let p: MotionParams = match &p_in.run {
         Some(name) => {
             let saved = app.project.motions.get(name).ok_or_else(|| {
-                anyhow::anyhow!("no saved motion {name:?}; saved: {}", app.project.motions.keys().cloned().collect::<Vec<_>>().join(", "))
+                anyhow::anyhow!(
+                    "no saved motion {name:?}; saved: {}",
+                    app.project
+                        .motions
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             })?;
             serde_json::from_value(project::overlay(saved, &serde_json::to_value(p_in)?))?
         }
         None => p_in.clone(),
     };
     let sc = &app.scene;
-    let (moving, missing) = sc.select(p.parts.as_deref().ok_or_else(|| anyhow::anyhow!("parts required"))?);
-    anyhow::ensure!(missing.is_empty() && !moving.is_empty(), "no part matched: {}", missing.join(", "));
-    anyhow::ensure!(p.translate.is_some() || p.rotate.is_some(), "give translate and/or rotate");
+    let (moving, missing) = sc.select(
+        p.parts
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("parts required"))?,
+    );
+    anyhow::ensure!(
+        missing.is_empty() && !moving.is_empty(),
+        "no part matched: {}",
+        missing.join(", ")
+    );
+    anyhow::ensure!(
+        p.translate.is_some() || p.rotate.is_some(),
+        "give translate and/or rotate"
+    );
     let against: Vec<usize> = match &p.against {
         Some(l) => sc.select(l).0,
         None => (0..sc.parts.len()).collect(),
     };
-    let against: Vec<usize> = against.into_iter().filter(|i| !moving.contains(i) && !sc.parts[*i].empty).collect();
+    let against: Vec<usize> = against
+        .into_iter()
+        .filter(|i| !moving.contains(i) && !sc.parts[*i].empty)
+        .collect();
     let rot = resolve_rotate(sc, &moving, &p.rotate)?;
     Ok(MotionSpec {
         steps: p.steps.unwrap_or(10).clamp(1, 200),
@@ -1032,7 +1324,14 @@ impl StepRes {
 /// closest exact distance found so far.
 fn check_at(sc: &Scene, spec: &MotionSpec, t: f32) -> (StepRes, usize) {
     let m = motion_at(t, spec.translate, spec.rot);
-    let mut r = StepRes { t, min: None, clash: 0.0, clash_pair: None, failed: 0, no_volume: 0 };
+    let mut r = StepRes {
+        t,
+        min: None,
+        clash: 0.0,
+        clash_pair: None,
+        failed: 0,
+        no_volume: 0,
+    };
     let mut checks = 0;
     let mut far: Vec<(f32, usize, usize, Mat4)> = Vec::new();
     for &a in &spec.moving {
@@ -1087,11 +1386,22 @@ fn check_at(sc: &Scene, spec: &MotionSpec, t: f32) -> (StepRes, usize) {
 
 /// Check many motion fractions in parallel (each is independent). Returns results and exact checks.
 pub fn check_many(sc: &Scene, spec: &MotionSpec, ts: &[f32]) -> (Vec<StepRes>, usize) {
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(ts.len()).max(1);
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(ts.len())
+        .max(1);
     let mut slots: Vec<Option<(StepRes, usize)>> = (0..ts.len()).map(|_| None).collect();
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..threads)
-            .map(|tid| scope.spawn(move || (tid..ts.len()).step_by(threads).map(|k| (k, check_at(sc, spec, ts[k]))).collect::<Vec<_>>()))
+            .map(|tid| {
+                scope.spawn(move || {
+                    (tid..ts.len())
+                        .step_by(threads)
+                        .map(|k| (k, check_at(sc, spec, ts[k])))
+                        .collect::<Vec<_>>()
+                })
+            })
             .collect();
         for h in handles {
             for (k, v) in h.join().expect("motion worker panicked") {
@@ -1121,26 +1431,57 @@ pub fn do_motion(app: &mut App, p_in: &MotionParams) -> anyhow::Result<(String, 
     let ts: Vec<f32> = (0..=steps).map(|k| k as f32 / steps as f32).collect();
     let (res, exact_checks) = check_many(sc, &spec, &ts);
     let first_clash = res.iter().position(|r| r.interfering());
-    let first_touch = res.iter().position(|r| r.min.is_some_and(|(d, _, _)| d < 0.01));
-    let tightest = res.iter().enumerate().filter_map(|(k, r)| r.min.map(|(d, a, b)| (k, d, a, b))).min_by(|x, y| x.1.total_cmp(&y.1));
+    let first_touch = res
+        .iter()
+        .position(|r| r.min.is_some_and(|(d, _, _)| d < 0.01));
+    let tightest = res
+        .iter()
+        .enumerate()
+        .filter_map(|(k, r)| r.min.map(|(d, a, b)| (k, d, a, b)))
+        .min_by(|x, y| x.1.total_cmp(&y.1));
 
     let mut s = String::new();
     let desc = format!(
         "{}{}",
-        p.translate.map(|v| format!("translate [{:.1}, {:.1}, {:.1}] mm ", v[0], v[1], v[2])).unwrap_or_default(),
-        rot.map(|(a, d, o)| format!("rotate {d:.1} deg about [{:.2}, {:.2}, {:.2}] through [{:.1}, {:.1}, {:.1}]", a.x, a.y, a.z, o.x, o.y, o.z)).unwrap_or_default()
+        p.translate
+            .map(|v| format!("translate [{:.1}, {:.1}, {:.1}] mm ", v[0], v[1], v[2]))
+            .unwrap_or_default(),
+        rot.map(|(a, d, o)| format!(
+            "rotate {d:.1} deg about [{:.2}, {:.2}, {:.2}] through [{:.1}, {:.1}, {:.1}]",
+            a.x, a.y, a.z, o.x, o.y, o.z
+        ))
+        .unwrap_or_default()
     );
-    let _ = writeln!(s, "motion of {} part(s): {desc}, {} steps, {} exact checks, {:.0} ms", moving.len(), steps, exact_checks, t0.elapsed().as_secs_f64() * 1e3);
+    let _ = writeln!(
+        s,
+        "motion of {} part(s): {desc}, {} steps, {} exact checks, {:.0} ms",
+        moving.len(),
+        steps,
+        exact_checks,
+        t0.elapsed().as_secs_f64() * 1e3
+    );
     let _ = writeln!(s, "step |  t   | clearance mm | nearest pair | clash mm³");
     for (k, r) in res.iter().enumerate() {
         let (c, pair) = match r.min {
-            Some((d, a, b)) => (format!("{d:.2}"), format!("{} <-> {}", short_path(sc, a), short_path(sc, b))),
+            Some((d, a, b)) => (
+                format!("{d:.2}"),
+                format!("{} <-> {}", short_path(sc, a), short_path(sc, b)),
+            ),
             None => (format!("> {horizon:.0}"), String::new()),
         };
         let clash = if r.clash > 0.0 || r.no_volume > 0 {
-            let mut c = if r.clash > 0.0 { format!("{:.1}", r.clash) } else { String::new() };
+            let mut c = if r.clash > 0.0 {
+                format!("{:.1}", r.clash)
+            } else {
+                String::new()
+            };
             if r.no_volume > 0 {
-                let _ = write!(c, "{}+{} pair(s) interfering, volume unknown", if c.is_empty() { "" } else { " " }, r.no_volume);
+                let _ = write!(
+                    c,
+                    "{}+{} pair(s) interfering, volume unknown",
+                    if c.is_empty() { "" } else { " " },
+                    r.no_volume
+                );
             }
             c
         } else if r.failed > 0 {
@@ -1153,28 +1494,54 @@ pub fn do_motion(app: &mut App, p_in: &MotionParams) -> anyhow::Result<(String, 
     match (first_clash, first_touch) {
         (Some(k), _) => {
             let (a, b) = res[k].clash_pair.unwrap();
-            let _ = writeln!(s, "FIRST INTERFERENCE at step {k} (t={:.2}): {} <-> {}", res[k].t, short_path(sc, a), short_path(sc, b));
+            let _ = writeln!(
+                s,
+                "FIRST INTERFERENCE at step {k} (t={:.2}): {} <-> {}",
+                res[k].t,
+                short_path(sc, a),
+                short_path(sc, b)
+            );
         }
         (None, Some(k)) => {
-            let _ = writeln!(s, "first contact at step {k} (t={:.2}), no interference", res[k].t);
+            let _ = writeln!(
+                s,
+                "first contact at step {k} (t={:.2}), no interference",
+                res[k].t
+            );
         }
         _ => {
             let _ = writeln!(s, "no contact during the motion");
         }
     }
     if let Some((k, d, a, b)) = tightest {
-        let _ = writeln!(s, "tightest: {d:.2} mm at step {k} ({} <-> {})", short_path(sc, a), short_path(sc, b));
+        let _ = writeln!(
+            s,
+            "tightest: {d:.2} mm at step {k} ({} <-> {})",
+            short_path(sc, a),
+            short_path(sc, b)
+        );
     }
 
     // Contact sheet.
     let nframes = p.frames.unwrap_or(4).min(16) as usize;
     let mut png = None;
     if nframes > 0 {
-        let mut idx: Vec<usize> = if nframes == 1 { vec![steps as usize] } else { (0..nframes).map(|f| (f * steps as usize + (nframes - 1) / 2) / (nframes - 1)).collect() };
+        let mut idx: Vec<usize> = if nframes == 1 {
+            vec![steps as usize]
+        } else {
+            (0..nframes)
+                .map(|f| (f * steps as usize + (nframes - 1) / 2) / (nframes - 1))
+                .collect()
+        };
         if let Some(k) = first_clash.or(first_touch)
             && !idx.contains(&k)
         {
-            let j = idx.iter().enumerate().min_by_key(|(_, v)| v.abs_diff(k)).map(|(j, _)| j).unwrap_or(0);
+            let j = idx
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, v)| v.abs_diff(k))
+                .map(|(j, _)| j)
+                .unwrap_or(0);
             idx[j] = k;
         }
         idx.sort();
@@ -1196,32 +1563,61 @@ pub fn do_motion(app: &mut App, p_in: &MotionParams) -> anyhow::Result<(String, 
             .map(|&k| {
                 let r = &res[k];
                 let state = if r.clash > 0.0 || r.no_volume > 0 {
-                    if r.clash > 0.0 { format!("CLASH {:.0} MM3", r.clash) } else { "CLASH".into() }
+                    if r.clash > 0.0 {
+                        format!("CLASH {:.0} MM3", r.clash)
+                    } else {
+                        "CLASH".into()
+                    }
                 } else {
-                    r.min.map(|(d, _, _)| format!("{d:.1} MM")).unwrap_or_else(|| format!(">{horizon:.0} MM"))
+                    r.min
+                        .map(|(d, _, _)| format!("{d:.1} MM"))
+                        .unwrap_or_else(|| format!(">{horizon:.0} MM"))
                 };
                 format!("STEP {k}/{steps}  {state}")
             })
             .collect();
         let mut rp = p.render.clone().unwrap_or_default();
         rp.cols = rp.cols.or(Some(if idx.len() <= 4 { 2 } else { 3 }));
-        let out = do_render_frames(app, &rp, Some(Frames { poses, labels, raw: false }))?;
-        let _ = writeln!(s, "frames: steps {:?}; {}", idx, out.text.lines().next().unwrap_or(""));
+        let out = do_render_frames(
+            app,
+            &rp,
+            Some(Frames {
+                poses,
+                labels,
+                raw: false,
+            }),
+        )?;
+        let _ = writeln!(
+            s,
+            "frames: steps {:?}; {}",
+            idx,
+            out.text.lines().next().unwrap_or("")
+        );
         png = Some(out.png);
     }
     if let Some(name) = &p.save_as {
         let mut keep = p.clone();
         keep.run = None;
         keep.save_as = None;
-        app.project.motions.insert(name.clone(), project::strip_nulls(serde_json::to_value(&keep)?));
+        app.project.motions.insert(
+            name.clone(),
+            project::strip_nulls(serde_json::to_value(&keep)?),
+        );
         let _ = writeln!(s, "saved motion {name:?} in {}", app.save_project()?);
     }
     Ok((s, png))
 }
 
-fn resolve_materials(sc: &Scene, spec: &Option<BTreeMap<String, String>>, notes: &mut Vec<String>) -> anyhow::Result<Vec<photo::Material>> {
-    let mut materials: Vec<photo::Material> =
-        sc.parts.iter().map(|part| photo::auto_material(part.file_color.unwrap_or([0.74, 0.77, 0.81]))).collect();
+fn resolve_materials(
+    sc: &Scene,
+    spec: &Option<BTreeMap<String, String>>,
+    notes: &mut Vec<String>,
+) -> anyhow::Result<Vec<photo::Material>> {
+    let mut materials: Vec<photo::Material> = sc
+        .parts
+        .iter()
+        .map(|part| photo::auto_material(part.file_color.unwrap_or([0.74, 0.77, 0.81])))
+        .collect();
     if let Some(ms) = spec {
         for (sel, name) in ms {
             let (ix, missing) = sc.select(std::slice::from_ref(sel));
@@ -1230,7 +1626,12 @@ fn resolve_materials(sc: &Scene, spec: &Option<BTreeMap<String, String>>, notes:
             }
             let m = match photo::material_preset(&name.to_ascii_lowercase()) {
                 Some(m) => m,
-                None if name.starts_with('#') => photo::Material { color: parse_hex(name)?, metallic: 0.0, roughness: 0.4, anisotropic: 0.0 },
+                None if name.starts_with('#') => photo::Material {
+                    color: parse_hex(name)?,
+                    metallic: 0.0,
+                    roughness: 0.4,
+                    anisotropic: 0.0,
+                },
                 None => anyhow::bail!("unknown material {name:?}"),
             };
             for i in ix {
@@ -1247,8 +1648,14 @@ fn lighting(app: &mut App, look: &Look) -> anyhow::Result<photo::Lighting> {
         "sky" => photo::Env::Sky,
         path => photo::Env::File(std::path::PathBuf::from(scene::shellexpand(path))),
     };
-    let fit = look.background_fit.clone().unwrap_or_else(|| "cover".into());
-    anyhow::ensure!(fit == "cover" || fit == "contain", "background_fit must be cover or contain");
+    let fit = look
+        .background_fit
+        .clone()
+        .unwrap_or_else(|| "cover".into());
+    anyhow::ensure!(
+        fit == "cover" || fit == "contain",
+        "background_fit must be cover or contain"
+    );
     let backplate = match &look.background_image {
         Some(p) => Some((app.image(p)?, fit)),
         None => None,
@@ -1270,10 +1677,18 @@ fn lighting(app: &mut App, look: &Look) -> anyhow::Result<photo::Lighting> {
 
 pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, String)> {
     let t0 = Instant::now();
-    let (w, h) = (p.width.unwrap_or(1600).clamp(64, 8192), p.height.unwrap_or(1000).clamp(64, 8192));
+    let (w, h) = (
+        p.width.unwrap_or(1600).clamp(64, 8192),
+        p.height.unwrap_or(1000).clamp(64, 8192),
+    );
     // Resolve camera, visibility and poses exactly like `render` (a quick GPU pass at the same aspect).
     let scale = (2048.0 / w.max(h) as f32).min(1.0);
-    let has_saved_cam = p.preset.as_ref().is_some_and(|n| app.project.views.get(n).is_some_and(|v| v.cameras.is_some()));
+    let has_saved_cam = p.preset.as_ref().is_some_and(|n| {
+        app.project
+            .views
+            .get(n)
+            .is_some_and(|v| v.cameras.is_some())
+    });
     let rp = RenderParams {
         preset: p.preset.clone(),
         views: p.views.clone(),
@@ -1281,7 +1696,11 @@ pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, Stri
         region: p.region,
         focus: p.focus.clone(),
         zoom: p.zoom,
-        perspective: p.perspective.or(if has_saved_cam || p.cameras.is_some() { None } else { Some(true) }),
+        perspective: p.perspective.or(if has_saved_cam || p.cameras.is_some() {
+            None
+        } else {
+            Some(true)
+        }),
         up: p.up.clone(),
         show: p.show.clone(),
         hide: p.hide.clone(),
@@ -1292,7 +1711,10 @@ pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, Stri
         ..Default::default()
     };
     let resolved = do_render(app, &rp)?;
-    let cam = *resolved.cams.first().ok_or_else(|| anyhow::anyhow!("no camera"))?;
+    let cam = *resolved
+        .cams
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("no camera"))?;
     let light = lighting(app, &p.look)?;
     let sc = &app.scene;
     let mut notes = Vec::new();
@@ -1339,8 +1761,15 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
         mp.run = p.run.clone();
     }
     let has_motion = mp.run.is_some() || mp.parts.is_some();
-    anyhow::ensure!(has_motion || p.orbit.is_some(), "give a motion (run / motion) and/or an orbit");
-    let spec = if has_motion { Some(resolve_motion(app, &mp)?) } else { None };
+    anyhow::ensure!(
+        has_motion || p.orbit.is_some(),
+        "give a motion (run / motion) and/or an orbit"
+    );
+    let spec = if has_motion {
+        Some(resolve_motion(app, &mp)?)
+    } else {
+        None
+    };
     let fps = p.fps.unwrap_or(30).clamp(1, 120);
     let n = ((p.seconds.unwrap_or(3.0).clamp(0.1, 120.0) * fps as f32).round() as usize).max(2);
     let even = |v: u32| (v.clamp(64, 3840) / 2) * 2;
@@ -1351,7 +1780,10 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
         o => anyhow::bail!("renderer must be fast or photo (got {o:?})"),
     };
     let format = p.format.clone().unwrap_or_else(|| "mp4".into());
-    anyhow::ensure!(format == "mp4" || format == "gif", "format must be mp4 or gif");
+    anyhow::ensure!(
+        format == "mp4" || format == "gif",
+        "format must be mp4 or gif"
+    );
     let ts: Vec<f32> = (0..n).map(|k| k as f32 / (n - 1) as f32).collect();
 
     // Exact checks per distinct frame.
@@ -1387,13 +1819,19 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
     let probe = do_render_frames(
         app,
         &rp,
-        Some(Frames { poses: sample.iter().map(|&k| poses[k].clone()).collect(), labels: sample.iter().map(|_| String::new()).collect(), raw: true }),
+        Some(Frames {
+            poses: sample.iter().map(|&k| poses[k].clone()).collect(),
+            labels: sample.iter().map(|_| String::new()).collect(),
+            raw: true,
+        }),
     )?;
     let mut cams = vec![probe.cams[0]; n];
     if let Some(o) = &p.orbit {
         // Constant-distance perspective orbit around the target, sized to the bounding sphere of
         // everything visible during the clip.
-        let vis: Vec<usize> = (0..app.scene.parts.len()).filter(|&i| probe.styles[i].visible && !app.scene.parts[i].empty).collect();
+        let vis: Vec<usize> = (0..app.scene.parts.len())
+            .filter(|&i| probe.styles[i].visible && !app.scene.parts[i].empty)
+            .collect();
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
         for pose in &poses {
             for &i in &vis {
@@ -1406,7 +1844,11 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
         let radius = (hi - lo).length() * 0.5;
         let half_fov = 15f32.to_radians();
         let aspect = w as f32 / h as f32;
-        let fit_half = if aspect >= 1.0 { half_fov } else { (half_fov.tan() * aspect).atan() };
+        let fit_half = if aspect >= 1.0 {
+            half_fov
+        } else {
+            (half_fov.tan() * aspect).atan()
+        };
         let ease = o.ease.unwrap_or(true);
         let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
         for (k, cam) in cams.iter_mut().enumerate() {
@@ -1420,7 +1862,13 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
             let right = dir.cross(Vec3::Z).normalize();
             let up = right.cross(dir).normalize();
             let dist = radius / fit_half.sin() / zoom;
-            *cam = CamSpec { dir: dir.into(), up: up.into(), target: target.into(), half_height: dist * half_fov.tan(), distance: Some(dist) };
+            *cam = CamSpec {
+                dir: dir.into(),
+                up: up.into(),
+                target: target.into(),
+                half_height: dist * half_fov.tan(),
+                distance: Some(dist),
+            };
         }
     }
     let cam = cams[0];
@@ -1439,10 +1887,19 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
     if photo_mode {
         rp.labels = Some(false);
         rp.scale_bar = Some(false);
-        let resolved = do_render_frames(app, &rp, Some(Frames { poses: vec![poses[0].clone()], labels: vec![String::new()], raw: true }))?;
+        let resolved = do_render_frames(
+            app,
+            &rp,
+            Some(Frames {
+                poses: vec![poses[0].clone()],
+                labels: vec![String::new()],
+                raw: true,
+            }),
+        )?;
         let materials = resolve_materials(&app.scene, &p.look.materials, &mut notes)?;
         let light = lighting(app, &p.look)?;
-        let work_dir = std::env::temp_dir().join(format!("cad-render-video-{}", std::process::id()));
+        let work_dir =
+            std::env::temp_dir().join(format!("cad-render-video-{}", std::process::id()));
         for (k, pose) in poses.iter().enumerate() {
             let out = photo::photo(&photo::PhotoReq {
                 scene: &app.scene,
@@ -1459,15 +1916,34 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
             })?;
             let mut f = out.frame;
             if checks.is_some() {
-                let mut cv = crate::font::Canvas { px: &mut f.rgba, w: f.w, h: f.h };
-                cv.label(12, 10, &label(k), 2, [40, 44, 52, 255], [255, 255, 255, 190]);
+                let mut cv = crate::font::Canvas {
+                    px: &mut f.rgba,
+                    w: f.w,
+                    h: f.h,
+                };
+                cv.label(
+                    12,
+                    10,
+                    &label(k),
+                    2,
+                    [40, 44, 52, 255],
+                    [255, 255, 255, 190],
+                );
             }
             frames.push(f);
         }
     } else {
         for (k, pose) in poses.iter().enumerate() {
             rp.cameras = Some(vec![cams[k]]);
-            let out = do_render_frames(app, &rp, Some(Frames { poses: vec![pose.clone()], labels: vec![label(k)], raw: true }))?;
+            let out = do_render_frames(
+                app,
+                &rp,
+                Some(Frames {
+                    poses: vec![pose.clone()],
+                    labels: vec![label(k)],
+                    raw: true,
+                }),
+            )?;
             frames.push(out.frame.ok_or_else(|| anyhow::anyhow!("no frame"))?);
         }
     }
@@ -1481,14 +1957,35 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
     let hold = (p.hold.unwrap_or(0.5).max(0.0) * fps as f32).round() as usize;
     let last = *order.last().unwrap();
     order.extend(std::iter::repeat_n(last, hold));
-    let seq: Vec<Frame> = order.iter().map(|&k| Frame { w: frames[k].w, h: frames[k].h, rgba: frames[k].rgba.clone() }).collect();
+    let seq: Vec<Frame> = order
+        .iter()
+        .map(|&k| Frame {
+            w: frames[k].w,
+            h: frames[k].h,
+            rgba: frames[k].rgba.clone(),
+        })
+        .collect();
 
     let path = match &p.save {
         Some(s) => std::path::PathBuf::from(s),
         None => {
-            let dir = app.project_path.as_ref().and_then(|pp| pp.parent().map(|d| d.join("videos"))).unwrap_or_else(std::env::temp_dir);
+            let dir = app
+                .project_path
+                .as_ref()
+                .and_then(|pp| pp.parent().map(|d| d.join("videos")))
+                .unwrap_or_else(std::env::temp_dir);
             std::fs::create_dir_all(&dir)?;
-            let stem = spec.as_ref().and_then(|s| s.p.run.clone()).or(p.run.clone()).unwrap_or_else(|| if p.orbit.is_some() { "orbit".into() } else { "motion".into() });
+            let stem = spec
+                .as_ref()
+                .and_then(|s| s.p.run.clone())
+                .or(p.run.clone())
+                .unwrap_or_else(|| {
+                    if p.orbit.is_some() {
+                        "orbit".into()
+                    } else {
+                        "motion".into()
+                    }
+                });
             dir.join(format!("{stem}.{format}"))
         }
     };
@@ -1503,14 +2000,25 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
     // Contact sheet of 6 key frames (always including the first interference/contact).
     let mut keys: Vec<usize> = (0..6).map(|k| k * (n - 1) / 5).collect();
     if let Some(c) = &checks
-        && let Some(k) = c.iter().position(|r| r.interfering()).or_else(|| c.iter().position(|r| r.min.is_some_and(|(d, _, _)| d < 0.01)))
+        && let Some(k) = c.iter().position(|r| r.interfering()).or_else(|| {
+            c.iter()
+                .position(|r| r.min.is_some_and(|(d, _, _)| d < 0.01))
+        })
         && !keys.contains(&k)
     {
-        let j = keys.iter().enumerate().min_by_key(|(_, v)| v.abs_diff(k)).map(|(j, _)| j).unwrap_or(0);
+        let j = keys
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, v)| v.abs_diff(k))
+            .map(|(j, _)| j)
+            .unwrap_or(0);
         keys[j] = k;
         keys.sort();
     }
-    let thumbs: Vec<Frame> = keys.iter().map(|&k| video::downscale(&frames[k], 640, 400)).collect();
+    let thumbs: Vec<Frame> = keys
+        .iter()
+        .map(|&k| video::downscale(&frames[k], 640, 400))
+        .collect();
     let sheet = video::encode_png(&video::sheet(&thumbs, 3))?;
 
     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -1523,7 +2031,11 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
         seq.len() as f32 / fps as f32,
         path.display(),
         size / 1024,
-        if photo_mode { "photo (Cycles)" } else { "fast (GPU)" },
+        if photo_mode {
+            "photo (Cycles)"
+        } else {
+            "fast (GPU)"
+        },
         frames_ms / 1e3,
         frames_ms / n as f64,
         checks_ms,
@@ -1534,8 +2046,19 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
     if let Some(c) = &checks {
         if let Some(k) = c.iter().position(|r| r.interfering()) {
             let (a, b) = c[k].clash_pair.unwrap_or((0, 0));
-            let _ = write!(text, "\nFIRST INTERFERENCE at frame {k} (t={:.2}): {} <-> {}", c[k].t, short_path(&app.scene, a), short_path(&app.scene, b));
-        } else if let Some((k, d)) = c.iter().enumerate().filter_map(|(k, r)| r.min.map(|(d, _, _)| (k, d))).min_by(|x, y| x.1.total_cmp(&y.1)) {
+            let _ = write!(
+                text,
+                "\nFIRST INTERFERENCE at frame {k} (t={:.2}): {} <-> {}",
+                c[k].t,
+                short_path(&app.scene, a),
+                short_path(&app.scene, b)
+            );
+        } else if let Some((k, d)) = c
+            .iter()
+            .enumerate()
+            .filter_map(|(k, r)| r.min.map(|(d, _, _)| (k, d)))
+            .min_by(|x, y| x.1.total_cmp(&y.1))
+        {
             let _ = write!(text, "\nno interference; tightest {d:.2} mm at frame {k}");
         } else {
             let _ = write!(text, "\nno interference; nothing within {horizon:.0} mm");
@@ -1551,23 +2074,63 @@ pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, Stri
 
 #[tool_router]
 impl CadRender {
-    #[tool(description = "Load STEP/BREP/IGES files (or directories of them) into the scene. Returns parts with ids, sizes and timings. Loaded files auto-reload when they change on disk.")]
-    async fn open(&self, Parameters(p): Parameters<OpenParams>) -> Result<CallToolResult, ErrorData> {
-        self.with_app(move |app| Ok(CallToolResult::success(vec![ContentBlock::text(do_open(app, &p)?)]))).await
-    }
-
-    #[tool(description = "Render the loaded scene to a PNG returned inline. Several views tile into one image. Supports hide/show/highlight/ghost, colour overrides, section cuts, x-ray, perspective, part labels and a scale bar (orthographic).")]
-    async fn render(&self, Parameters(p): Parameters<RenderParams>) -> Result<CallToolResult, ErrorData> {
+    #[tool(
+        description = "Load STEP/BREP/IGES files (or directories of them) into the scene. Returns parts with ids, sizes and timings. Loaded files auto-reload when they change on disk.",
+        annotations(
+            title = "Open CAD files",
+            read_only_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn open(
+        &self,
+        Parameters(p): Parameters<OpenParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| {
-            let r = do_render(app, &p)?;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&r.png);
-            Ok(CallToolResult::success(vec![ContentBlock::image(b64, "image/png"), ContentBlock::text(r.text)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(do_open(
+                app, &p,
+            )?)]))
         })
         .await
     }
 
-    #[tool(description = "List loaded parts (id, assembly path, file, bounding-box size, triangle count).")]
-    async fn parts(&self, Parameters(p): Parameters<PartsParams>) -> Result<CallToolResult, ErrorData> {
+    #[tool(
+        description = "Render the loaded scene to a PNG returned inline. Several views tile into one image. Supports hide/show/highlight/ghost, colour overrides, section cuts, x-ray, perspective, part labels and a scale bar (orthographic).",
+        annotations(
+            title = "Render views",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn render(
+        &self,
+        Parameters(p): Parameters<RenderParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.with_app(move |app| {
+            let r = do_render(app, &p)?;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&r.png);
+            Ok(CallToolResult::success(vec![
+                ContentBlock::image(b64, "image/png"),
+                ContentBlock::text(r.text),
+            ]))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "List loaded parts (id, assembly path, file, bounding-box size, triangle count).",
+        annotations(
+            title = "List parts",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn parts(
+        &self,
+        Parameters(p): Parameters<PartsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| {
             if let Some(n) = app.refresh()? {
                 log::info(&n);
@@ -1577,13 +2140,26 @@ impl CadRender {
                 Some(f) => sc.select(std::slice::from_ref(f)).0,
                 None => (0..sc.parts.len()).collect(),
             };
-            Ok(CallToolResult::success(vec![ContentBlock::text(parts_table(sc, &set))]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(
+                parts_table(sc, &set),
+            )]))
         })
         .await
     }
 
-    #[tool(description = "Exact B-rep properties of parts: volume, area, mass (with density), centroid, bbox, topology counts, face types, cylinder radii (bend radii, holes) and torus radii.")]
-    async fn inspect(&self, Parameters(p): Parameters<InspectParams>) -> Result<CallToolResult, ErrorData> {
+    #[tool(
+        description = "Exact B-rep properties of parts: volume, area, mass (with density), centroid, bbox, topology counts, face types, cylinder radii (bend radii, holes) and torus radii.",
+        annotations(
+            title = "Inspect geometry",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn inspect(
+        &self,
+        Parameters(p): Parameters<InspectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| {
             app.refresh()?;
             let sc = &app.scene;
@@ -1594,8 +2170,13 @@ impl CadRender {
                 let mut v = sc.inspect(i);
                 if let Some(obj) = v.as_object_mut() {
                     obj.insert("id".into(), sc.parts[i].id.clone().into());
-                    if let (Some(d), Some(vol)) = (p.density, obj.get("volume_mm3").and_then(|v| v.as_f64())) {
-                        obj.insert("mass_kg".into(), serde_json::json!((vol * d * 1e-6 * 1000.0).round() / 1000.0));
+                    if let (Some(d), Some(vol)) =
+                        (p.density, obj.get("volume_mm3").and_then(|v| v.as_f64()))
+                    {
+                        obj.insert(
+                            "mass_kg".into(),
+                            serde_json::json!((vol * d * 1e-6 * 1000.0).round() / 1000.0),
+                        );
                     }
                 }
                 out.push(v);
@@ -1609,8 +2190,19 @@ impl CadRender {
         .await
     }
 
-    #[tool(description = "Exact minimum distance between two parts (B-rep), with the closest points.")]
-    async fn measure(&self, Parameters(p): Parameters<MeasureParams>) -> Result<CallToolResult, ErrorData> {
+    #[tool(
+        description = "Exact minimum distance between two parts (B-rep), with the closest points.",
+        annotations(
+            title = "Measure distance",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn measure(
+        &self,
+        Parameters(p): Parameters<MeasureParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| {
             app.refresh()?;
             let sc = &app.scene;
@@ -1626,27 +2218,71 @@ impl CadRender {
         .await
     }
 
-    #[tool(description = "Interference check: boolean common volume between every pair of parts whose bounding boxes overlap.")]
-    async fn clash(&self, Parameters(p): Parameters<ClashParams>) -> Result<CallToolResult, ErrorData> {
+    #[tool(
+        description = "Interference check: boolean common volume between every pair of parts whose bounding boxes overlap.",
+        annotations(
+            title = "Check interference",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn clash(
+        &self,
+        Parameters(p): Parameters<ClashParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| {
             app.refresh()?;
-            Ok(CallToolResult::success(vec![ContentBlock::text(do_clash(app, &p)?)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(do_clash(
+                app, &p,
+            )?)]))
         })
         .await
     }
 
-    #[tool(name = "move", description = "Move parts (rigid translate/rotate) or apply/reset/save a named pose. Later render/measure/clash/motion calls use the moved positions. Poses are saved in the project file.")]
-    async fn r#move(&self, Parameters(p): Parameters<MoveParams>) -> Result<CallToolResult, ErrorData> {
-        self.with_app(move |app| Ok(CallToolResult::success(vec![ContentBlock::text(do_move(app, &p)?)]))).await
+    #[tool(
+        name = "move",
+        description = "Move parts (rigid translate/rotate) or apply/reset/save a named pose. Later render/measure/clash/motion calls use the moved positions. Poses are saved in the project file.",
+        annotations(
+            title = "Move parts",
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn r#move(
+        &self,
+        Parameters(p): Parameters<MoveParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.with_app(move |app| {
+            Ok(CallToolResult::success(vec![ContentBlock::text(do_move(
+                app, &p,
+            )?)]))
+        })
+        .await
     }
 
-    #[tool(description = "Sweep parts through a motion (translate and/or rotate) in steps; at every step reports exact clearance to nearby parts and any interference, the first contact, and returns a contact sheet of frames. Motions can be saved and re-run by name.")]
-    async fn motion(&self, Parameters(p): Parameters<MotionParams>) -> Result<CallToolResult, ErrorData> {
+    #[tool(
+        description = "Sweep parts through a motion (translate and/or rotate) in steps; at every step reports exact clearance to nearby parts and any interference, the first contact, and returns a contact sheet of frames. Motions can be saved and re-run by name.",
+        annotations(
+            title = "Sweep a motion",
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn motion(
+        &self,
+        Parameters(p): Parameters<MotionParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| {
             let (text, png) = do_motion(app, &p)?;
             let mut content = Vec::new();
             if let Some(png) = png {
-                content.push(ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(&png), "image/png"));
+                content.push(ContentBlock::image(
+                    base64::engine::general_purpose::STANDARD.encode(&png),
+                    "image/png",
+                ));
             }
             content.push(ContentBlock::text(text));
             Ok(CallToolResult::success(content))
@@ -1654,30 +2290,86 @@ impl CadRender {
         .await
     }
 
-    #[tool(description = "Photo-realistic still (path-traced with Cycles on the GPU): physical materials (aluminium, steel, rubber, paint...), soft studio light and a shadowed floor. Takes the same viewpoint options as `render`, incl. saved views and poses. Seconds per image, so use `render` for checks and `photo` for presentation.")]
-    async fn photo(&self, Parameters(p): Parameters<PhotoParams>) -> Result<CallToolResult, ErrorData> {
+    #[tool(
+        description = "Photo-realistic still (path-traced with Cycles on the GPU): physical materials (aluminium, steel, rubber, paint...), soft studio light and a shadowed floor. Takes the same viewpoint options as `render`, incl. saved views and poses. Seconds per image, so use `render` for checks and `photo` for presentation.",
+        annotations(
+            title = "Photo-realistic render",
+            read_only_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn photo(
+        &self,
+        Parameters(p): Parameters<PhotoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| {
             let (png, text) = do_photo(app, &p)?;
-            Ok(CallToolResult::success(vec![ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(&png), "image/png"), ContentBlock::text(text)]))
+            Ok(CallToolResult::success(vec![
+                ContentBlock::image(
+                    base64::engine::general_purpose::STANDARD.encode(&png),
+                    "image/png",
+                ),
+                ContentBlock::text(text),
+            ]))
         })
         .await
     }
 
-    #[tool(description = "Record a motion (saved via `motion {save_as}` or inline) as an MP4 (hardware H.264) or GIF with a fixed camera. renderer \"fast\" (CAD look, exact clearance burned into every frame) or \"photo\" (Cycles path tracing, seconds per frame). Returns a contact sheet of key frames inline and the video path.")]
-    async fn video(&self, Parameters(p): Parameters<VideoParams>) -> Result<CallToolResult, ErrorData> {
+    #[tool(
+        description = "Record a motion (saved via `motion {save_as}` or inline) as an MP4 (hardware H.264) or GIF with a fixed camera. renderer \"fast\" (CAD look, exact clearance burned into every frame) or \"photo\" (Cycles path tracing, seconds per frame). Returns a contact sheet of key frames inline and the video path.",
+        annotations(
+            title = "Record a video",
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn video(
+        &self,
+        Parameters(p): Parameters<VideoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| {
             let (png, text) = do_video(app, &p)?;
-            Ok(CallToolResult::success(vec![ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(&png), "image/png"), ContentBlock::text(text)]))
+            Ok(CallToolResult::success(vec![
+                ContentBlock::image(
+                    base64::engine::general_purpose::STANDARD.encode(&png),
+                    "image/png",
+                ),
+                ContentBlock::text(text),
+            ]))
         })
         .await
     }
 
-    #[tool(description = "Save the last render (parameters + exact cameras) as a named view in the project file, so `render {preset: name}` reproduces the same point of view in any session.")]
-    async fn save_view(&self, Parameters(p): Parameters<SaveViewParams>) -> Result<CallToolResult, ErrorData> {
+    #[tool(
+        description = "Save the last render (parameters + exact cameras) as a named view in the project file, so `render {preset: name}` reproduces the same point of view in any session.",
+        annotations(
+            title = "Save viewpoint",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn save_view(
+        &self,
+        Parameters(p): Parameters<SaveViewParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| {
-            let (params, cams) = app.last_render.clone().ok_or_else(|| anyhow::anyhow!("render something first"))?;
+            let (params, cams) = app
+                .last_render
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("render something first"))?;
             let freeze = p.freeze.unwrap_or(true);
-            app.project.views.insert(p.name.clone(), SavedView { params: project::strip_nulls(params), cameras: freeze.then_some(cams), note: p.note.clone() });
+            app.project.views.insert(
+                p.name.clone(),
+                SavedView {
+                    params: project::strip_nulls(params),
+                    cameras: freeze.then_some(cams),
+                    note: p.note.clone(),
+                },
+            );
             let path = app.save_project()?;
             Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "saved view {:?}{} in {path}",
@@ -1688,8 +2380,19 @@ impl CadRender {
         .await
     }
 
-    #[tool(description = "List saved views, poses and motions of the project (or delete one).")]
-    async fn saved(&self, Parameters(p): Parameters<SavedParams>) -> Result<CallToolResult, ErrorData> {
+    #[tool(
+        description = "List saved views, poses and motions of the project (or delete one).",
+        annotations(
+            title = "Saved views, poses, motions",
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn saved(
+        &self,
+        Parameters(p): Parameters<SavedParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| {
             let mut s = String::new();
             let mut changed = false;
@@ -1705,15 +2408,42 @@ impl CadRender {
             if changed {
                 let _ = writeln!(s, "deleted; saved {}", app.save_project()?);
             }
-            let _ = writeln!(s, "project: {}", app.project_path.as_ref().map(|p| p.display().to_string()).unwrap_or("(none, call open)".into()));
+            let _ = writeln!(
+                s,
+                "project: {}",
+                app.project_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or("(none, call open)".into())
+            );
             let _ = writeln!(s, "\nviews:");
             for (k, v) in &app.project.views {
-                let views = v.params.get("views").map(|x| x.to_string()).unwrap_or("[\"iso\"]".into());
-                let _ = writeln!(s, "  {k}: {views}{}{}", if v.cameras.is_some() { " frozen" } else { "" }, v.note.as_ref().map(|n| format!(" - {n}")).unwrap_or_default());
+                let views = v
+                    .params
+                    .get("views")
+                    .map(|x| x.to_string())
+                    .unwrap_or("[\"iso\"]".into());
+                let _ = writeln!(
+                    s,
+                    "  {k}: {views}{}{}",
+                    if v.cameras.is_some() { " frozen" } else { "" },
+                    v.note
+                        .as_ref()
+                        .map(|n| format!(" - {n}"))
+                        .unwrap_or_default()
+                );
             }
             let _ = writeln!(s, "poses:");
             for (k, v) in &app.project.poses {
-                let _ = writeln!(s, "  {k}: {} parts{}", v.parts.len(), v.note.as_ref().map(|n| format!(" - {n}")).unwrap_or_default());
+                let _ = writeln!(
+                    s,
+                    "  {k}: {} parts{}",
+                    v.parts.len(),
+                    v.note
+                        .as_ref()
+                        .map(|n| format!(" - {n}"))
+                        .unwrap_or_default()
+                );
             }
             let _ = writeln!(s, "motions:");
             for (k, v) in &app.project.motions {
@@ -1724,11 +2454,22 @@ impl CadRender {
         .await
     }
 
-    #[tool(description = "Unload everything.")]
+    #[tool(
+        description = "Unload everything.",
+        annotations(
+            title = "Unload everything",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
     async fn close(&self) -> Result<CallToolResult, ErrorData> {
         self.with_app(|app| {
             app.scene.clear();
-            Ok(CallToolResult::success(vec![ContentBlock::text("scene cleared")]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(
+                "scene cleared",
+            )]))
         })
         .await
     }
@@ -1737,14 +2478,26 @@ impl CadRender {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for CadRender {
     fn get_info(&self) -> ServerConfig {
-        let gpu = self.app.lock().map(|a| a.renderer.as_ref().map(|r| r.adapter_name.clone()).unwrap_or_else(|| "none".into())).unwrap_or_default();
+        let gpu = self
+            .app
+            .lock()
+            .map(|a| {
+                a.renderer
+                    .as_ref()
+                    .map(|r| r.adapter_name.clone())
+                    .unwrap_or_else(|| "none".into())
+            })
+            .unwrap_or_default();
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("cad-render-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(format!(
-                "cad-render-mcp renders CAD files (STEP/BREP/IGES via OpenCascade {}) on the GPU ({gpu}) and answers exact geometry questions. \
-                 Workflow: `open` files once; edit the source model and re-export; every call reloads changed files automatically. \
-                 `render` returns the image inline: ask for several views in one call (e.g. [\"iso\",\"front\",\"right\",\"top\"]) instead of several calls. \
-                 Orthographic views carry a scale bar. Units are mm. Use `inspect`, `measure` and `clash` for numbers instead of judging from pixels.",
+                "cad-render-mcp: look at and check CAD models (STEP/BREP/IGES, OpenCascade {}; GPU: {gpu}). Units mm, Z up, front view looks along +Y.\n\
+                 1. `open` the files (a directory works too; `split_solids` = one part per body). Edit the source model and re-export at will: every call reloads changed files.\n\
+                 2. Look: `render` returns the image inline in ~10 ms. Ask for several views in ONE call (views [\"iso\",\"front\",\"right\",\"top\"]); use show/hide/highlight/ghost, section, region (close-ups), style xray/lines, part_labels, background_image. Orthographic views carry a scale bar.\n\
+                 3. Numbers, never from pixels: `inspect` (volume, mass, bend/hole radii), `measure` (exact min distance), `clash` (interference volumes).\n\
+                 4. Movement: `move` places parts (poses, saved by name); `motion` sweeps parts through a translate/rotate and reports clearance per step and the first contact.\n\
+                 5. Repeatable views: `save_view` stores the last render incl. exact camera; `render {{preset}}` reproduces it in any session. `saved` lists views/poses/motions (kept in .cad-render.json next to the model).\n\
+                 6. Presentation: `photo` (Cycles path tracing: materials, environment studio/sky/HDRI, backdrop photos with real shadows; seconds) and `video` (MP4/GIF of a motion and/or an orbit swoop, fast or photo frames, exact clearance burned in).",
                 crate::occt::occt_version()
             ))
     }

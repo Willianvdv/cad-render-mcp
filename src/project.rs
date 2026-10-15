@@ -53,7 +53,13 @@ impl Project {
     }
 
     pub fn summary(&self) -> String {
-        let names = |m: Vec<&String>| if m.is_empty() { "-".to_string() } else { m.into_iter().cloned().collect::<Vec<_>>().join(", ") };
+        let names = |m: Vec<&String>| {
+            if m.is_empty() {
+                "-".to_string()
+            } else {
+                m.into_iter().cloned().collect::<Vec<_>>().join(", ")
+            }
+        };
         format!(
             "views: {}\nposes: {}\nmotions: {}",
             names(self.views.keys().collect()),
@@ -66,7 +72,11 @@ impl Project {
 /// Default project file: `.cad-render.json` in the directory of the first opened file (or the
 /// directory itself when a directory was opened).
 pub fn default_path(first: &Path) -> PathBuf {
-    let dir = if first.is_dir() { first.to_path_buf() } else { first.parent().map(Path::to_path_buf).unwrap_or_default() };
+    let dir = if first.is_dir() {
+        first.to_path_buf()
+    } else {
+        first.parent().map(Path::to_path_buf).unwrap_or_default()
+    };
     dir.join(".cad-render.json")
 }
 
@@ -86,8 +96,15 @@ pub fn overlay(base: &serde_json::Value, over: &serde_json::Value) -> serde_json
 /// Drop null fields recursively (stored presets stay small and readable).
 pub fn strip_nulls(v: serde_json::Value) -> serde_json::Value {
     match v {
-        serde_json::Value::Object(m) => serde_json::Value::Object(m.into_iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k, strip_nulls(v))).collect()),
-        serde_json::Value::Array(a) => serde_json::Value::Array(a.into_iter().map(strip_nulls).collect()),
+        serde_json::Value::Object(m) => serde_json::Value::Object(
+            m.into_iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k, strip_nulls(v)))
+                .collect(),
+        ),
+        serde_json::Value::Array(a) => {
+            serde_json::Value::Array(a.into_iter().map(strip_nulls).collect())
+        }
         o => o,
     }
 }

@@ -3,25 +3,52 @@
 use std::path::PathBuf;
 
 const OCCT_LIBS: &[&str] = &[
-    "TKernel", "TKMath", "TKG2d", "TKG3d", "TKGeomBase", "TKGeomAlgo", "TKBRep", "TKTopAlgo",
-    "TKMesh", "TKBO", "TKShHealing", "TKXSBase", "TKDE", "TKDESTEP", "TKDEIGES", "TKCDF",
-    "TKLCAF", "TKCAF", "TKXCAF",
+    "TKernel",
+    "TKMath",
+    "TKG2d",
+    "TKG3d",
+    "TKGeomBase",
+    "TKGeomAlgo",
+    "TKBRep",
+    "TKTopAlgo",
+    "TKMesh",
+    "TKBO",
+    "TKPrim",
+    "TKShHealing",
+    "TKXSBase",
+    "TKDE",
+    "TKDESTEP",
+    "TKDEIGES",
+    "TKCDF",
+    "TKLCAF",
+    "TKCAF",
+    "TKXCAF",
 ];
 
 fn main() {
     println!("cargo:rerun-if-changed=cpp/occt_shim.cpp");
     println!("cargo:rerun-if-changed=cpp/occt_shim.h");
     println!("cargo:rerun-if-env-changed=OCCT_DIR");
-    let dir = std::env::var("OCCT_DIR").map(PathBuf::from).unwrap_or_else(|_| {
-        let out = std::process::Command::new("brew").args(["--prefix", "opencascade"]).output();
-        match out {
-            Ok(o) if o.status.success() => PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()),
-            _ => PathBuf::from("/opt/homebrew/opt/opencascade"),
-        }
-    });
+    let dir = std::env::var("OCCT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let out = std::process::Command::new("brew")
+                .args(["--prefix", "opencascade"])
+                .output();
+            match out {
+                Ok(o) if o.status.success() => {
+                    PathBuf::from(String::from_utf8_lossy(&o.stdout).trim())
+                }
+                _ => PathBuf::from("/opt/homebrew/opt/opencascade"),
+            }
+        });
     let inc = dir.join("include/opencascade");
     let lib = dir.join("lib");
-    assert!(inc.exists(), "OCCT headers not found at {} (set OCCT_DIR)", inc.display());
+    assert!(
+        inc.exists(),
+        "OCCT headers not found at {} (set OCCT_DIR)",
+        inc.display()
+    );
     cc::Build::new()
         .cpp(true)
         .std("c++17")

@@ -1,0 +1,3 @@
+*.step linguist-generated=true
+*.gif binary
+*.png binary

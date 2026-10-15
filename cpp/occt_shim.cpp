@@ -5,6 +5,11 @@
 #include "occt_shim.h"
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <STEPCAFControl_Writer.hxx>
+#include <gp_Ax2.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepBndLib.hxx>
@@ -692,5 +697,65 @@ int ss_points_inside(const ss_doc* da, int ia, const double* ma, const ss_doc* d
 void ss_str_free(char* s) { std::free(s); }
 
 const char* ss_occt_version(void) { return OCC_VERSION_COMPLETE; }
+
+// Write a small, named and coloured demo assembly (a miniature roof rack) as STEP: used as the
+// public test fixture and for trying the tools without your own CAD files. Units: mm, Z up,
+// front = +Y.
+int ss_write_demo_step(const char* path, char* err, size_t errlen) {
+  quiet_occt();
+  try {
+    auto box = [](double x0, double y0, double z0, double x1, double y1, double z1) {
+      return BRepPrimAPI_MakeBox(gp_Pnt(x0, y0, z0), gp_Pnt(x1, y1, z1)).Shape();
+    };
+    auto cyl = [](gp_Pnt base, gp_Dir dir, double r, double h) {
+      return BRepPrimAPI_MakeCylinder(gp_Ax2(base, dir), r, h).Shape();
+    };
+    auto plate = [&](double x0, double x1) {
+      TopoDS_Shape p = box(x0, 0, 0, x1, 800, 120);
+      for (double y : {100.0, 300.0, 500.0, 700.0})  // R6 bolt holes through the plate
+        p = BRepAlgoAPI_Cut(p, cyl(gp_Pnt(x0 - 1, y, 60), gp_Dir(1, 0, 0), 6.0, (x1 - x0) + 2)).Shape();
+      return p;
+    };
+    Handle(XCAFApp_Application) app = XCAFApp_Application::GetApplication();
+    Handle(TDocStd_Document) doc;
+    app->NewDocument("MDTV-XCAF", doc);
+    Handle(XCAFDoc_ShapeTool) st = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+    Handle(XCAFDoc_ColorTool) ct = XCAFDoc_DocumentTool::ColorTool(doc->Main());
+    TDF_Label asm_label = st->NewShape();
+    TDataStd_Name::Set(asm_label, "DEMO_RACK");
+    auto add = [&](const TopoDS_Shape& s, const char* name, double r, double g, double b) {
+      TDF_Label part = st->AddShape(s, false);
+      TDataStd_Name::Set(part, name);
+      ct->SetColor(part, Quantity_Color(r, g, b, Quantity_TOC_sRGB), XCAFDoc_ColorSurf);
+      TDF_Label comp = st->AddComponent(asm_label, part, TopLoc_Location());
+      TDataStd_Name::Set(comp, name);
+    };
+    const double alu[3] = {0.91, 0.92, 0.93};
+    add(plate(-405, -400), "PLATE_L", alu[0], alu[1], alu[2]);
+    add(plate(400, 405), "PLATE_R", alu[0], alu[1], alu[2]);
+    const char* bars[] = {"BAR_1", "BAR_2", "BAR_3", "BAR_4"};
+    int k = 0;
+    for (double y : {80.0, 280.0, 480.0, 680.0})  // 40 x 40 bars, 160 mm apart, touching both plates
+      add(box(-400, y, 120, 400, y + 40, 160), bars[k++], alu[0], alu[1], alu[2]);
+    TopoDS_Shape wheel = BRepAlgoAPI_Cut(cyl(gp_Pnt(0, 400, 160), gp_Dir(0, 0, 1), 250, 150),
+                                         cyl(gp_Pnt(0, 400, 159), gp_Dir(0, 0, 1), 100, 152)).Shape();
+    add(wheel, "WHEEL", 0.08, 0.08, 0.08);  // rests on the bars (z = 160)
+    add(cyl(gp_Pnt(0, 805, 90), gp_Dir(0, 1, 0), 45, 60), "LAMP", 0.05, 0.05, 0.06);
+    add(cyl(gp_Pnt(-420, 300, 60), gp_Dir(1, 0, 0), 8, 40), "BOLT", 0.7, 0.72, 0.74);  // M16 through R6 hole: clashes
+    st->UpdateAssemblies();
+    STEPCAFControl_Writer w;
+    w.SetColorMode(true);
+    w.SetNameMode(true);
+    if (!w.Transfer(doc, STEPControl_AsIs)) { set_err(err, errlen, "STEP transfer failed"); return -1; }
+    if (w.Write(path) != IFSelect_RetDone) { set_err(err, errlen, "STEP write failed"); return -1; }
+    app->Close(doc);
+    return 0;
+  } catch (const Standard_Failure& f) {
+    set_err(err, errlen, std::string("OCCT: ") + f.GetMessageString());
+  } catch (...) {
+    set_err(err, errlen, "unknown exception writing demo STEP");
+  }
+  return -1;
+}
 
 }  // extern "C"

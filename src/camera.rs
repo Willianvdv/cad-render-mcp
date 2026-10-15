@@ -55,14 +55,26 @@ pub fn parse_view(spec: &str, up: Up) -> anyhow::Result<View> {
         "iso_below" => named(Vec3::new(1.0, -1.0, -1.0)),
         _ => {
             if let Some(rest) = s.strip_prefix("dir:") {
-                let v: Vec<f32> = rest.split(',').map(|x| x.trim().parse::<f32>()).collect::<Result<_, _>>()?;
-                anyhow::ensure!(v.len() == 3, "dir: needs 3 numbers (camera -> scene, model space)");
+                let v: Vec<f32> = rest
+                    .split(',')
+                    .map(|x| x.trim().parse::<f32>())
+                    .collect::<Result<_, _>>()?;
+                anyhow::ensure!(
+                    v.len() == 3,
+                    "dir: needs 3 numbers (camera -> scene, model space)"
+                );
                 let d = Vec3::new(v[0], v[1], v[2]);
                 anyhow::ensure!(d.length() > 0.0, "dir: must be non-zero");
-                return Ok(View { label: spec.trim().to_uppercase(), fixed: None, dir: d.normalize() });
+                return Ok(View {
+                    label: spec.trim().to_uppercase(),
+                    fixed: None,
+                    dir: d.normalize(),
+                });
             } else if let Some(rest) = s.strip_prefix("az") {
                 // az<deg>el<deg>: camera azimuth from front (-Y) towards right (+X), elevation above horizon
-                let (a, e) = rest.split_once("el").ok_or_else(|| anyhow::anyhow!("use az<deg>el<deg>, e.g. az30el20"))?;
+                let (a, e) = rest
+                    .split_once("el")
+                    .ok_or_else(|| anyhow::anyhow!("use az<deg>el<deg>, e.g. az30el20"))?;
                 let a = a.parse::<f32>()?.to_radians();
                 let e = e.parse::<f32>()?.to_radians();
                 let cam_pos = Vec3::new(a.sin() * e.cos(), -a.cos() * e.cos(), e.sin());
@@ -74,7 +86,11 @@ pub fn parse_view(spec: &str, up: Up) -> anyhow::Result<View> {
             }
         }
     };
-    Ok(View { label: spec.trim().to_uppercase(), fixed: None, dir: up.map(d).normalize() })
+    Ok(View {
+        label: spec.trim().to_uppercase(),
+        fixed: None,
+        dir: up.map(d).normalize(),
+    })
 }
 
 /// A resolved camera that can be stored and replayed exactly (a frozen viewpoint).
@@ -106,7 +122,17 @@ pub struct Fitted {
 const FOV_Y_DEG: f32 = 30.0;
 
 /// Fit the camera so `pts` (bbox corners of what should be in frame) fill the tile.
-pub fn fit(dir: Vec3, up: Up, pts: &[Vec3], scene_pts: &[Vec3], aspect: f32, zoom: f32, perspective: bool, tile_h_px: u32) -> Fitted {
+#[allow(clippy::too_many_arguments)]
+pub fn fit(
+    dir: Vec3,
+    up: Up,
+    pts: &[Vec3],
+    scene_pts: &[Vec3],
+    aspect: f32,
+    zoom: f32,
+    perspective: bool,
+    tile_h_px: u32,
+) -> Fitted {
     let mut upv = up.vec();
     if dir.cross(upv).length() < 1e-3 {
         // looking straight up/down: use model +Y (or -Z for Y-up) as screen up
@@ -128,16 +154,33 @@ pub fn fit(dir: Vec3, up: Up, pts: &[Vec3], scene_pts: &[Vec3], aspect: f32, zoo
     let margin = 1.08 / zoom.max(1e-3);
     let mut hw = ((rmax - rmin) * 0.5).max(1e-3) * margin;
     let mut hh = ((umax - umin) * 0.5).max(1e-3) * margin;
-    if hw / hh > aspect { hh = hw / aspect } else { hw = hh * aspect }
+    if hw / hh > aspect {
+        hh = hw / aspect
+    } else {
+        hw = hh * aspect
+    }
     let _ = hw;
-    let target = right * (rmin + rmax) * 0.5 + up_s * (umin + umax) * 0.5 + dir * (fdmin + fdmax) * 0.5;
-    let distance = perspective.then(|| hh / (FOV_Y_DEG.to_radians() * 0.5).tan() + (fdmax - fdmin).max(1e-3) * 0.5);
-    let spec = CamSpec { dir: dir.into(), up: up_s.into(), target: target.into(), half_height: hh, distance };
+    let target =
+        right * (rmin + rmax) * 0.5 + up_s * (umin + umax) * 0.5 + dir * (fdmin + fdmax) * 0.5;
+    let distance = perspective
+        .then(|| hh / (FOV_Y_DEG.to_radians() * 0.5).tan() + (fdmax - fdmin).max(1e-3) * 0.5);
+    let spec = CamSpec {
+        dir: dir.into(),
+        up: up_s.into(),
+        target: target.into(),
+        half_height: hh,
+        distance,
+    };
     build(&spec, scene_pts.iter().chain(pts), aspect, tile_h_px)
 }
 
 /// Build the projection for a (possibly stored) camera; near/far planes follow the current scene.
-pub fn build<'a>(spec: &CamSpec, scene_pts: impl Iterator<Item = &'a Vec3>, aspect: f32, tile_h_px: u32) -> Fitted {
+pub fn build<'a>(
+    spec: &CamSpec,
+    scene_pts: impl Iterator<Item = &'a Vec3>,
+    aspect: f32,
+    tile_h_px: u32,
+) -> Fitted {
     let dir = Vec3::from(spec.dir).normalize();
     let right = dir.cross(Vec3::from(spec.up)).normalize();
     let up_s = right.cross(dir).normalize();
@@ -162,7 +205,15 @@ pub fn build<'a>(spec: &CamSpec, scene_pts: impl Iterator<Item = &'a Vec3>, aspe
         let far = (sdmax - eye_d + sdepth * 0.02 + 1.0).max(near + 1.0);
         let view = Mat4::look_at_rh(eye, target, up_s);
         let proj = Mat4::perspective_rh(FOV_Y_DEG.to_radians(), aspect, near, far);
-        Fitted { view_proj: proj * view, eye, dir, right, up: up_s, mm_per_px: None, spec: *spec }
+        Fitted {
+            view_proj: proj * view,
+            eye,
+            dir,
+            right,
+            up: up_s,
+            mm_per_px: None,
+            spec: *spec,
+        }
     } else {
         // eye in front of everything in the scene, looking through `target`
         let back = (td - sdmin).max(0.0) + sdepth * 0.05 + 1.0;
@@ -171,7 +222,15 @@ pub fn build<'a>(spec: &CamSpec, scene_pts: impl Iterator<Item = &'a Vec3>, aspe
         let far = back + (sdmax - td).max(0.0) + sdepth * 0.05 + 2.0;
         let hw = hh * aspect;
         let proj = Mat4::orthographic_rh(-hw, hw, -hh, hh, 0.0, far);
-        Fitted { view_proj: proj * view, eye, dir, right, up: up_s, mm_per_px: Some(2.0 * hh / tile_h_px as f32), spec: *spec }
+        Fitted {
+            view_proj: proj * view,
+            eye,
+            dir,
+            right,
+            up: up_s,
+            mm_per_px: Some(2.0 * hh / tile_h_px as f32),
+            spec: *spec,
+        }
     }
 }
 
@@ -197,25 +256,65 @@ mod tests {
 
     #[test]
     fn ortho_fit_contains_points() {
-        let pts: Vec<Vec3> = (0..8).map(|k| Vec3::new((k & 1) as f32 * 2000.0, (k >> 1 & 1) as f32 * 1000.0, (k >> 2) as f32 * 300.0)).collect();
+        let pts: Vec<Vec3> = (0..8)
+            .map(|k| {
+                Vec3::new(
+                    (k & 1) as f32 * 2000.0,
+                    (k >> 1 & 1) as f32 * 1000.0,
+                    (k >> 2) as f32 * 300.0,
+                )
+            })
+            .collect();
         for v in ["iso", "front", "top", "az30el20"] {
-            let f = fit(parse_view(v, Up::Z).unwrap().dir, Up::Z, &pts, &pts, 4.0 / 3.0, 1.0, false, 600);
+            let f = fit(
+                parse_view(v, Up::Z).unwrap().dir,
+                Up::Z,
+                &pts,
+                &pts,
+                4.0 / 3.0,
+                1.0,
+                false,
+                600,
+            );
             for p in &pts {
                 let c = f.view_proj * p.extend(1.0);
                 let n = c.truncate() / c.w;
-                assert!(n.x.abs() <= 1.0 && n.y.abs() <= 1.0 && (0.0..=1.0).contains(&n.z), "{v}: {p} -> {n}");
+                assert!(
+                    n.x.abs() <= 1.0 && n.y.abs() <= 1.0 && (0.0..=1.0).contains(&n.z),
+                    "{v}: {p} -> {n}"
+                );
             }
         }
     }
 
     #[test]
     fn perspective_fit_contains_points() {
-        let pts: Vec<Vec3> = (0..8).map(|k| Vec3::new((k & 1) as f32 * 50.0, (k >> 1 & 1) as f32 * 80.0, (k >> 2) as f32 * 20.0)).collect();
-        let f = fit(parse_view("iso", Up::Z).unwrap().dir, Up::Z, &pts, &pts, 1.0, 1.0, true, 600);
+        let pts: Vec<Vec3> = (0..8)
+            .map(|k| {
+                Vec3::new(
+                    (k & 1) as f32 * 50.0,
+                    (k >> 1 & 1) as f32 * 80.0,
+                    (k >> 2) as f32 * 20.0,
+                )
+            })
+            .collect();
+        let f = fit(
+            parse_view("iso", Up::Z).unwrap().dir,
+            Up::Z,
+            &pts,
+            &pts,
+            1.0,
+            1.0,
+            true,
+            600,
+        );
         for p in &pts {
             let c = f.view_proj * p.extend(1.0);
             let n = c.truncate() / c.w;
-            assert!(c.w > 0.0 && n.x.abs() <= 1.0 && n.y.abs() <= 1.0 && (0.0..=1.0).contains(&n.z), "{p} -> {n}");
+            assert!(
+                c.w > 0.0 && n.x.abs() <= 1.0 && n.y.abs() <= 1.0 && (0.0..=1.0).contains(&n.z),
+                "{p} -> {n}"
+            );
         }
     }
 }

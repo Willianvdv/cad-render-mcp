@@ -59,10 +59,18 @@ pub fn expand_paths(paths: &[String]) -> anyhow::Result<Vec<PathBuf>> {
         if p.is_dir() {
             let mut v: Vec<PathBuf> = std::fs::read_dir(&p)?
                 .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|f| f.extension().and_then(|e| e.to_str()).is_some_and(|e| CAD_EXTS.contains(&e.to_ascii_lowercase().as_str())))
+                .filter(|f| {
+                    f.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| CAD_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+                })
                 .collect();
             v.sort();
-            anyhow::ensure!(!v.is_empty(), "{} contains no STEP/BREP/IGES files", p.display());
+            anyhow::ensure!(
+                !v.is_empty(),
+                "{} contains no STEP/BREP/IGES files",
+                p.display()
+            );
             out.extend(v);
         } else {
             anyhow::ensure!(p.exists(), "{} does not exist", p.display());
@@ -111,7 +119,11 @@ pub struct LoadReport {
 
 impl Scene {
     pub fn new() -> Scene {
-        Scene { lin_defl: 0.0, ang_defl: 0.3, ..Default::default() }
+        Scene {
+            lin_defl: 0.0,
+            ang_defl: 0.3,
+            ..Default::default()
+        }
     }
 
     pub fn clear(&mut self) {
@@ -119,7 +131,7 @@ impl Scene {
         self.files.clear();
     }
 
-    fn build_file(&self, path: &Path, r: &Renderer) -> anyhow::Result<(File, Vec<Built>)> {
+    fn build_file(&self, path: &Path, r: Option<&Renderer>) -> anyhow::Result<(File, Vec<Built>)> {
         let t0 = Instant::now();
         let mut doc = Doc::load(&path.to_string_lossy(), self.split_solids)?;
         let load_ms = t0.elapsed().as_secs_f64() * 1e3;
@@ -152,16 +164,53 @@ impl Scene {
                 }
             }
             let mid = (lo + hi) * 0.5;
-            let anchor = m.pos.iter().map(|p| Vec3::from(*p)).min_by(|a, b| a.distance_squared(mid).total_cmp(&b.distance_squared(mid))).unwrap_or(mid);
+            let anchor = m
+                .pos
+                .iter()
+                .map(|p| Vec3::from(*p))
+                .min_by(|a, b| a.distance_squared(mid).total_cmp(&b.distance_squared(mid)))
+                .unwrap_or(mid);
             tris += m.idx.len() / 3;
-            parts.push(Built { cpu: std::sync::Arc::new(CpuMesh { pos: m.pos.clone(), nrm: m.nrm.clone(), idx: m.idx.clone() }), name: m.name.clone(), path: m.path.clone(), color: m.color, lo, hi, anchor, gpu: r.upload(m), empty });
+            parts.push(Built {
+                cpu: std::sync::Arc::new(CpuMesh {
+                    pos: m.pos.clone(),
+                    nrm: m.nrm.clone(),
+                    idx: m.idx.clone(),
+                }),
+                name: m.name.clone(),
+                path: m.path.clone(),
+                color: m.color,
+                lo,
+                hi,
+                anchor,
+                gpu: match r {
+                    Some(r) => r.upload(m),
+                    None => GpuMesh::cpu_only(m.idx.len() / 3),
+                },
+                empty,
+            });
         }
         let upload_ms = t2.elapsed().as_secs_f64() * 1e3;
-        Ok((File { path: path.to_path_buf(), mtime: mtime(path), doc, load_ms, mesh_ms, upload_ms, tris }, parts))
+        Ok((
+            File {
+                path: path.to_path_buf(),
+                mtime: mtime(path),
+                doc,
+                load_ms,
+                mesh_ms,
+                upload_ms,
+                tris,
+            },
+            parts,
+        ))
     }
 
     /// Load files into the scene (replacing a file that is already loaded).
-    pub fn load(&mut self, paths: &[PathBuf], r: &Renderer) -> anyhow::Result<Vec<LoadReport>> {
+    pub fn load(
+        &mut self,
+        paths: &[PathBuf],
+        r: Option<&Renderer>,
+    ) -> anyhow::Result<Vec<LoadReport>> {
         let mut reps = Vec::new();
         for p in paths {
             let p = std::fs::canonicalize(p).unwrap_or(p.clone());
@@ -171,7 +220,12 @@ impl Scene {
         Ok(reps)
     }
 
-    fn load_one(&mut self, path: &Path, slot: Option<usize>, r: &Renderer) -> anyhow::Result<LoadReport> {
+    fn load_one(
+        &mut self,
+        path: &Path,
+        slot: Option<usize>,
+        r: Option<&Renderer>,
+    ) -> anyhow::Result<LoadReport> {
         let (file, built) = self.build_file(path, r)?;
         let rep = LoadReport {
             file: path.display().to_string(),
@@ -192,13 +246,25 @@ impl Scene {
             }
         };
         // Keep part ids stable across reloads: reuse ids by (assembly path, occurrence order).
-        let old: Vec<(String, String, glam::Mat4)> = self.parts.iter().filter(|p| p.file == fi).map(|p| (p.path.clone(), p.id.clone(), p.pose)).collect();
-        let insert_at = self.parts.iter().position(|p| p.file == fi).unwrap_or(self.parts.len());
+        let old: Vec<(String, String, glam::Mat4)> = self
+            .parts
+            .iter()
+            .filter(|p| p.file == fi)
+            .map(|p| (p.path.clone(), p.id.clone(), p.pose))
+            .collect();
+        let insert_at = self
+            .parts
+            .iter()
+            .position(|p| p.file == fi)
+            .unwrap_or(self.parts.len());
         self.parts.retain(|p| p.file != fi);
         let mut used = vec![false; old.len()];
         let mut new_parts = Vec::with_capacity(built.len());
         for (local, b) in built.into_iter().enumerate() {
-            let reuse = old.iter().enumerate().position(|(k, (op, _, _))| !used[k] && *op == b.path);
+            let reuse = old
+                .iter()
+                .enumerate()
+                .position(|(k, (op, _, _))| !used[k] && *op == b.path);
             let (id, pose) = match reuse {
                 Some(k) => {
                     used[k] = true;
@@ -209,7 +275,21 @@ impl Scene {
                     (format!("p{}", self.next_id), glam::Mat4::IDENTITY)
                 }
             };
-            new_parts.push(Part { id, name: b.name, path: b.path, file: fi, local, file_color: b.color, bmin: b.lo, bmax: b.hi, anchor: b.anchor, gpu: b.gpu, cpu: b.cpu, empty: b.empty, pose });
+            new_parts.push(Part {
+                id,
+                name: b.name,
+                path: b.path,
+                file: fi,
+                local,
+                file_color: b.color,
+                bmin: b.lo,
+                bmax: b.hi,
+                anchor: b.anchor,
+                gpu: b.gpu,
+                cpu: b.cpu,
+                empty: b.empty,
+                pose,
+            });
         }
         let insert_at = insert_at.min(self.parts.len());
         self.parts.splice(insert_at..insert_at, new_parts);
@@ -217,21 +297,29 @@ impl Scene {
     }
 
     /// Reload files whose modification time changed. Returns the reloaded file names.
-    pub fn refresh(&mut self, r: &Renderer) -> anyhow::Result<Vec<String>> {
+    pub fn refresh(&mut self, r: Option<&Renderer>) -> anyhow::Result<Vec<String>> {
         let mut changed = Vec::new();
         for i in 0..self.files.len() {
             let m = mtime(&self.files[i].path);
             if m.is_some() && m != self.files[i].mtime {
                 let p = self.files[i].path.clone();
                 self.load_one(&p, Some(i), r)?;
-                changed.push(p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default());
+                changed.push(
+                    p.file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                );
             }
         }
         Ok(changed)
     }
 
     pub fn file_label(&self, fi: usize) -> String {
-        self.files[fi].path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()
+        self.files[fi]
+            .path
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default()
     }
 
     /// Resolve selectors to part indices. A selector is a part id ("p3"), an exact name or assembly
@@ -242,7 +330,13 @@ impl Scene {
         let mut missing = Vec::new();
         for s in sels {
             let sl = s.to_lowercase();
-            let mut hit: Vec<usize> = self.parts.iter().enumerate().filter(|(_, p)| p.id == *s || p.name == *s || p.path == *s).map(|(i, _)| i).collect();
+            let mut hit: Vec<usize> = self
+                .parts
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.id == *s || p.name == *s || p.path == *s)
+                .map(|(i, _)| i)
+                .collect();
             if hit.is_empty() {
                 let is_glob = sl.contains('*') || sl.contains('?');
                 hit = self
@@ -280,7 +374,11 @@ impl Scene {
         let (a, b) = (p.bmin, p.bmax);
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
         for k in 0..8 {
-            let c = Vec3::new(if k & 1 == 0 { a.x } else { b.x }, if k & 2 == 0 { a.y } else { b.y }, if k & 4 == 0 { a.z } else { b.z });
+            let c = Vec3::new(
+                if k & 1 == 0 { a.x } else { b.x },
+                if k & 2 == 0 { a.y } else { b.y },
+                if k & 4 == 0 { a.z } else { b.z },
+            );
             let w = m.transform_point3(c);
             lo = lo.min(w);
             hi = hi.max(w);
@@ -294,7 +392,11 @@ impl Scene {
     }
 
     pub fn bounds(&self, set: &[usize]) -> Option<(Vec3, Vec3)> {
-        let mut it = set.iter().copied().filter(|&i| !self.parts[i].empty).map(|i| self.world_box(i));
+        let mut it = set
+            .iter()
+            .copied()
+            .filter(|&i| !self.parts[i].empty)
+            .map(|i| self.world_box(i));
         let (mut lo, mut hi) = it.next()?;
         for (a, b) in it {
             lo = lo.min(a);
@@ -304,14 +406,40 @@ impl Scene {
     }
 
     /// Exact distance with explicit placements (use `parts[i].pose` for the current pose).
-    pub fn distance_at(&self, a: usize, ma: glam::Mat4, b: usize, mb: glam::Mat4) -> Option<(f64, [f64; 3], [f64; 3])> {
+    pub fn distance_at(
+        &self,
+        a: usize,
+        ma: glam::Mat4,
+        b: usize,
+        mb: glam::Mat4,
+    ) -> Option<(f64, [f64; 3], [f64; 3])> {
         let (pa, pb) = (&self.parts[a], &self.parts[b]);
-        occt::distance(&self.files[pa.file].doc, pa.local, occt::placement(ma), &self.files[pb.file].doc, pb.local, occt::placement(mb))
+        occt::distance(
+            &self.files[pa.file].doc,
+            pa.local,
+            occt::placement(ma),
+            &self.files[pb.file].doc,
+            pb.local,
+            occt::placement(mb),
+        )
     }
 
-    pub fn common_at(&self, a: usize, ma: glam::Mat4, b: usize, mb: glam::Mat4) -> Option<(f64, [f64; 6])> {
+    pub fn common_at(
+        &self,
+        a: usize,
+        ma: glam::Mat4,
+        b: usize,
+        mb: glam::Mat4,
+    ) -> Option<(f64, [f64; 6])> {
         let (pa, pb) = (&self.parts[a], &self.parts[b]);
-        occt::common(&self.files[pa.file].doc, pa.local, occt::placement(ma), &self.files[pb.file].doc, pb.local, occt::placement(mb))
+        occt::common(
+            &self.files[pa.file].doc,
+            pa.local,
+            occt::placement(ma),
+            &self.files[pb.file].doc,
+            pb.local,
+            occt::placement(mb),
+        )
     }
 
     /// Point-classification interference test, both ways (fallback for failed booleans).

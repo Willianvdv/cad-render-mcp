@@ -6,16 +6,12 @@ usage: tests/drive.py calls.json OUT_DIR      (calls.json: [{"tool": "...", "arg
 import base64, json, os, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from mcp_e2e import ROOT, Client, text_of  # noqa: E402
-
-BIN = os.environ.get("CAD_RENDER_BIN", os.path.join(ROOT, "target/release/cad-render-mcp"))
+from mcp_client import Client, images_of, text_of  # noqa: E402
 
 calls = json.load(open(sys.argv[1]))
 out = sys.argv[2]
 os.makedirs(out, exist_ok=True)
-c = Client([BIN])
-c.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "drive", "version": "0"}})
-c.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+c = Client()
 for k, call in enumerate(calls):
     t = time.perf_counter()
     r = c.request("tools/call", {"name": call["tool"], "arguments": call.get("args", {})})
