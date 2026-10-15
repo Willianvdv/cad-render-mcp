@@ -1,5 +1,6 @@
 //! View specs ("iso", "front", "az30el20", "dir:1,-1,0.5") and camera fitting.
 
+use glam::camera::rh::{proj::directx, view::look_at_mat4};
 use glam::{Mat4, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -203,8 +204,8 @@ pub fn build<'a>(
         let eye_d = eye.dot(dir);
         let near = (sdmin - eye_d - sdepth * 0.02).max(dist * 0.01);
         let far = (sdmax - eye_d + sdepth * 0.02 + 1.0).max(near + 1.0);
-        let view = Mat4::look_at_rh(eye, target, up_s);
-        let proj = Mat4::perspective_rh(FOV_Y_DEG.to_radians(), aspect, near, far);
+        let view = look_at_mat4(eye, target, up_s);
+        let proj = directx::perspective(FOV_Y_DEG.to_radians(), aspect, near, far);
         Fitted {
             view_proj: proj * view,
             eye,
@@ -218,10 +219,10 @@ pub fn build<'a>(
         // eye in front of everything in the scene, looking through `target`
         let back = (td - sdmin).max(0.0) + sdepth * 0.05 + 1.0;
         let eye = target - dir * back;
-        let view = Mat4::look_at_rh(eye, target, up_s);
+        let view = look_at_mat4(eye, target, up_s);
         let far = back + (sdmax - td).max(0.0) + sdepth * 0.05 + 2.0;
         let hw = hh * aspect;
-        let proj = Mat4::orthographic_rh(-hw, hw, -hh, hh, 0.0, far);
+        let proj = directx::orthographic(-hw, hw, -hh, hh, 0.0, far);
         Fitted {
             view_proj: proj * view,
             eye,
