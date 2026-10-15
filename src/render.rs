@@ -95,6 +95,8 @@ pub struct RenderReq<'a> {
     pub unlit: bool,
     /// Rigid placement per part: one set shared by all tiles, or one set per tile (motion frames).
     pub poses: Vec<Vec<Mat4>>,
+    /// Return raw RGBA instead of encoding a PNG (video frames).
+    pub raw: bool,
 }
 
 pub struct RenderOut {
@@ -106,6 +108,8 @@ pub struct RenderOut {
     pub notes: Vec<String>,
     /// Resolved camera per tile (store these to replay the exact viewpoint).
     pub cams: Vec<camera::CamSpec>,
+    /// Raw RGBA (when `raw` was requested; `png` is then empty).
+    pub rgba: Option<Vec<u8>>,
 }
 
 struct Targets {
@@ -614,9 +618,9 @@ impl Renderer {
         if visible.is_empty() {
             notes.push("no visible parts".into());
         }
-        let png = encode_png(&px, w, h, r.background.is_some())?;
+        let (png, rgba) = if r.raw { (Vec::new(), Some(px)) } else { (encode_png(&px, w, h, r.background.is_some())?, None) };
         let encode_ms = t1.elapsed().as_secs_f64() * 1e3;
-        Ok(RenderOut { png, width: w, height: h, gpu_ms, encode_ms, notes, cams: fits.iter().map(|f| f.spec).collect() })
+        Ok(RenderOut { png, width: w, height: h, gpu_ms, encode_ms, notes, cams: fits.iter().map(|f| f.spec).collect(), rgba })
     }
 }
 

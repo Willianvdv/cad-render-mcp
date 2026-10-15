@@ -13,8 +13,15 @@ anyhow = "1"
 base64 = "0.22"
 bytemuck = { version = "1", features = ["derive"] }
 exr = "1"
+gif = "0.14"
 glam = { version = "0.30", features = ["bytemuck"] }
 libc = "0.2"
+objc2 = "0.6"
+objc2-av-foundation = { version = "0.3", features = ["AVAssetWriter", "AVAssetWriterInput", "AVMediaFormat", "AVVideoSettings", "objc2-core-video", "objc2-core-media"] }
+objc2-core-foundation = { version = "0.3", features = ["CFString", "CFDictionary", "CFBase"] }
+objc2-core-media = { version = "0.3", features = ["CMTime"] }
+objc2-core-video = { version = "0.3", features = ["CVPixelBuffer", "CVImageBuffer", "CVBuffer", "CVReturn", "CVPixelBufferPool"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSDictionary", "NSValue", "NSError", "NSObject", "NSArray"] }
 png = "0.18"
 pollster = "0.4"
 rmcp = { version = "3.5", features = ["server", "transport-io", "macros"] }

@@ -289,6 +289,41 @@ pub struct PhotoParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct VideoParams {
+    /// Saved motion to record (see `motion {save_as}`).
+    pub run: Option<String>,
+    /// Or an inline motion (same fields as the `motion` tool); fields here override `run`.
+    pub motion: Option<MotionParams>,
+    /// "fast" (GPU CAD look, default, ~ms per frame) or "photo" (Cycles path tracing, seconds per frame).
+    pub renderer: Option<String>,
+    /// Frames per second (default 30).
+    pub fps: Option<u32>,
+    /// Duration of the movement in seconds (default 3).
+    pub seconds: Option<f32>,
+    /// Play forward then back (default false).
+    pub pingpong: Option<bool>,
+    /// Hold the last frame this many seconds (default 0.5).
+    pub hold: Option<f32>,
+    /// Frame size (default 1280 x 720; rounded to even).
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// View settings (preset, views, highlight, style, section...) for the frames; the camera is
+    /// fixed for the whole clip and frames the full movement.
+    pub render: Option<RenderParams>,
+    /// Burn the exact clearance / interference of each frame into the image (default true).
+    pub annotate: Option<bool>,
+    /// photo renderer: materials, samples (default 16), floor, exposure.
+    pub materials: Option<BTreeMap<String, String>>,
+    pub samples: Option<u32>,
+    pub floor: Option<bool>,
+    pub exposure: Option<f32>,
+    /// "mp4" (H.264 via AVFoundation, default) or "gif".
+    pub format: Option<String>,
+    /// Output path (default: videos/<motion>.<ext> next to the project file).
+    pub save: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct SaveViewParams {
     /// Name to save the last render under (overwrites).
     pub name: String,
@@ -468,12 +503,15 @@ pub struct Rendered {
     pub cams: Vec<CamSpec>,
     pub styles: Vec<PartStyle>,
     pub poses: Vec<Mat4>,
+    pub frame: Option<crate::video::Frame>,
 }
 
 /// Motion frames: every tile uses the first view's camera with its own set of part poses.
 pub struct Frames {
     pub poses: Vec<Vec<Mat4>>,
     pub labels: Vec<String>,
+    /// Return raw RGBA (video frames) instead of a PNG.
+    pub raw: bool,
 }
 
 /// Merge a saved view into the call's parameters; returns its frozen cameras unless the call
@@ -652,6 +690,7 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
         part_labels,
         xray: style == "xray",
         unlit: style == "lines",
+        raw: frames.as_ref().is_some_and(|f| f.raw),
         poses: match &frames {
             Some(f) => f.poses.clone(),
             None => vec![sc.parts.iter().map(|p| p.pose).collect()],
@@ -702,7 +741,8 @@ pub fn do_render_frames(app: &mut App, p_in: &RenderParams, frames: Option<Frame
     for nn in notes {
         let _ = write!(text, "\nnote: {nn}");
     }
-    Ok(Rendered { png: out.png, text, cams: out.cams, styles: styles_out, poses: poses_out })
+    let frame = out.rgba.map(|rgba| crate::video::Frame { w: out.width, h: out.height, rgba });
+    Ok(Rendered { png: out.png, text, cams: out.cams, styles: styles_out, poses: poses_out, frame })
 }
 
 fn one(sc: &Scene, s: &str) -> anyhow::Result<usize> {
@@ -850,12 +890,35 @@ pub fn do_move(app: &mut App, p: &MoveParams) -> anyhow::Result<String> {
     Ok(s)
 }
 
-pub fn do_motion(app: &mut App, p_in: &MotionParams) -> anyhow::Result<(String, Option<Vec<u8>>)> {
-    let t0 = Instant::now();
-    app.refresh()?;
+/// A resolved motion: who moves, how, and what to check against.
+pub struct MotionSpec {
+    pub p: MotionParams,
+    pub moving: Vec<usize>,
+    pub against: Vec<usize>,
+    pub steps: u32,
+    pub horizon: f32,
+    pub translate: Option<[f32; 3]>,
+    pub rot: Option<(Vec3, f32, Vec3)>,
+}
+
+impl MotionSpec {
+    /// Placement of every part at fraction `t` of the motion.
+    pub fn poses_at(&self, sc: &Scene, t: f32) -> Vec<Mat4> {
+        let m = motion_at(t, self.translate, self.rot);
+        let mut v: Vec<Mat4> = sc.parts.iter().map(|p| p.pose).collect();
+        for &i in &self.moving {
+            v[i] = m * v[i];
+        }
+        v
+    }
+}
+
+pub fn resolve_motion(app: &App, p_in: &MotionParams) -> anyhow::Result<MotionSpec> {
     let p: MotionParams = match &p_in.run {
         Some(name) => {
-            let saved = app.project.motions.get(name).ok_or_else(|| anyhow::anyhow!("no saved motion {name:?}"))?;
+            let saved = app.project.motions.get(name).ok_or_else(|| {
+                anyhow::anyhow!("no saved motion {name:?}; saved: {}", app.project.motions.keys().cloned().collect::<Vec<_>>().join(", "))
+            })?;
             serde_json::from_value(project::overlay(saved, &serde_json::to_value(p_in)?))?
         }
         None => p_in.clone(),
@@ -869,102 +932,128 @@ pub fn do_motion(app: &mut App, p_in: &MotionParams) -> anyhow::Result<(String, 
         None => (0..sc.parts.len()).collect(),
     };
     let against: Vec<usize> = against.into_iter().filter(|i| !moving.contains(i) && !sc.parts[*i].empty).collect();
-    let steps = p.steps.unwrap_or(10).clamp(1, 200);
-    let horizon = p.clearance_mm.unwrap_or(50.0).max(0.0);
     let rot = resolve_rotate(sc, &moving, &p.rotate)?;
+    Ok(MotionSpec {
+        steps: p.steps.unwrap_or(10).clamp(1, 200),
+        horizon: p.clearance_mm.unwrap_or(50.0).max(0.0),
+        translate: p.translate,
+        rot,
+        moving,
+        against,
+        p,
+    })
+}
 
-    struct StepRes {
-        t: f32,
-        min: Option<(f64, usize, usize)>,
-        clash: f64,
-        clash_pair: Option<(usize, usize)>,
-        failed: usize,
-        /// Interfering pairs found by point classification (boolean gave no volume).
-        no_volume: usize,
+pub struct StepRes {
+    pub t: f32,
+    pub min: Option<(f64, usize, usize)>,
+    pub clash: f64,
+    pub clash_pair: Option<(usize, usize)>,
+    pub failed: usize,
+    /// Interfering pairs found by point classification (boolean gave no volume).
+    pub no_volume: usize,
+}
+
+impl StepRes {
+    pub fn interfering(&self) -> bool {
+        self.clash > 0.0 || self.no_volume > 0
     }
-    // Each step is independent: run them on all cores. Per step, pairs whose boxes overlap get a
-    // boolean check; the rest are measured nearest-box-first and pruned once no box can beat the
-    // closest exact distance found so far.
-    let check_step = |k: u32| -> (StepRes, usize) {
-        let t = k as f32 / steps as f32;
-        let m = motion_at(t, p.translate, rot);
-        let mut r = StepRes { t, min: None, clash: 0.0, clash_pair: None, failed: 0, no_volume: 0 };
-        let mut checks = 0;
-        let mut far: Vec<(f32, usize, usize, Mat4)> = Vec::new();
-        for &a in &moving {
-            let ma = m * sc.parts[a].pose;
-            let (alo, ahi) = sc.posed_box(a, ma);
-            for &b in &against {
-                let (blo, bhi) = sc.world_box(b);
-                let sep = (alo - bhi).max(blo - ahi);
-                if sep.max_element() > horizon {
-                    continue;
-                }
-                if sep.max_element() <= 0.05 {
-                    checks += 1;
-                    match sc.common_at(a, ma, b, sc.parts[b].pose) {
-                        Some((v, _)) if v > 0.5 => {
-                            r.clash += v;
-                            r.clash_pair.get_or_insert((a, b));
-                            r.min = Some((0.0, a, b));
-                            continue;
-                        }
-                        None => r.failed += 1,
-                        _ => {}
+}
+
+/// Exact clearance/interference of the moving parts at fraction `t`. Pairs whose boxes overlap get
+/// a boolean check; the rest are measured nearest-box-first and pruned once no box can beat the
+/// closest exact distance found so far.
+fn check_at(sc: &Scene, spec: &MotionSpec, t: f32) -> (StepRes, usize) {
+    let m = motion_at(t, spec.translate, spec.rot);
+    let mut r = StepRes { t, min: None, clash: 0.0, clash_pair: None, failed: 0, no_volume: 0 };
+    let mut checks = 0;
+    let mut far: Vec<(f32, usize, usize, Mat4)> = Vec::new();
+    for &a in &spec.moving {
+        let ma = m * sc.parts[a].pose;
+        let (alo, ahi) = sc.posed_box(a, ma);
+        for &b in &spec.against {
+            let (blo, bhi) = sc.world_box(b);
+            let sep = (alo - bhi).max(blo - ahi);
+            if sep.max_element() > spec.horizon {
+                continue;
+            }
+            if sep.max_element() <= 0.05 {
+                checks += 1;
+                match sc.common_at(a, ma, b, sc.parts[b].pose) {
+                    Some((v, _)) if v > 0.5 => {
+                        r.clash += v;
+                        r.clash_pair.get_or_insert((a, b));
+                        r.min = Some((0.0, a, b));
+                        continue;
                     }
+                    None => r.failed += 1,
+                    _ => {}
                 }
-                far.push((sep.max(Vec3::ZERO).length(), a, b, ma));
+            }
+            far.push((sep.max(Vec3::ZERO).length(), a, b, ma));
+        }
+    }
+    far.sort_by(|x, y| x.0.total_cmp(&y.0));
+    for (lb, a, b, ma) in far {
+        // Overlapping-box pairs (lb ~ 0) are always measured: they may hide a failed boolean.
+        if r.min.is_some_and(|(d, _, _)| lb as f64 >= d) && lb > 0.05 {
+            break;
+        }
+        checks += 1;
+        if let Some((d, _, _)) = sc.distance_at(a, ma, b, sc.parts[b].pose)
+            && (d as f32) <= spec.horizon
+        {
+            // Touching per the exact distance but no boolean overlap: confirm by classification.
+            if d < 0.01 && lb <= 0.05 && sc.interferes_at(a, ma, b, sc.parts[b].pose) {
+                r.no_volume += 1;
+                r.clash_pair.get_or_insert((a, b));
+                r.min = Some((0.0, a, b));
+                continue;
+            }
+            if r.min.is_none_or(|(md, _, _)| d < md) {
+                r.min = Some((d, a, b));
             }
         }
-        far.sort_by(|x, y| x.0.total_cmp(&y.0));
-        for (lb, a, b, ma) in far {
-            // Overlapping-box pairs (lb ~ 0) are always measured: they may hide a failed boolean.
-            if r.min.is_some_and(|(d, _, _)| lb as f64 >= d) && lb > 0.05 {
-                break;
-            }
-            checks += 1;
-            if let Some((d, _, _)) = sc.distance_at(a, ma, b, sc.parts[b].pose)
-                && (d as f32) <= horizon
-            {
-                // Touching per the exact distance but no boolean overlap: confirm by classification.
-                if d < 0.01 && lb <= 0.05 && sc.interferes_at(a, ma, b, sc.parts[b].pose) {
-                    r.no_volume += 1;
-                    r.clash_pair.get_or_insert((a, b));
-                    r.min = Some((0.0, a, b));
-                    continue;
-                }
-                if r.min.is_none_or(|(md, _, _)| d < md) {
-                    r.min = Some((d, a, b));
-                }
-            }
-        }
-        (r, checks)
-    };
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(steps as usize + 1);
-    let mut slots: Vec<Option<(StepRes, usize)>> = (0..=steps).map(|_| None).collect();
+    }
+    (r, checks)
+}
+
+/// Check many motion fractions in parallel (each is independent). Returns results and exact checks.
+pub fn check_many(sc: &Scene, spec: &MotionSpec, ts: &[f32]) -> (Vec<StepRes>, usize) {
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(ts.len()).max(1);
+    let mut slots: Vec<Option<(StepRes, usize)>> = (0..ts.len()).map(|_| None).collect();
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..threads)
-            .map(|tid| {
-                let check_step = &check_step;
-                scope.spawn(move || (tid as u32..=steps).step_by(threads).map(|k| (k, check_step(k))).collect::<Vec<_>>())
-            })
+            .map(|tid| scope.spawn(move || (tid..ts.len()).step_by(threads).map(|k| (k, check_at(sc, spec, ts[k]))).collect::<Vec<_>>()))
             .collect();
         for h in handles {
             for (k, v) in h.join().expect("motion worker panicked") {
-                slots[k as usize] = Some(v);
+                slots[k] = Some(v);
             }
         }
     });
-    let mut exact_checks = 0;
-    let res: Vec<StepRes> = slots
+    let mut checks = 0;
+    let res = slots
         .into_iter()
         .map(|v| {
             let (r, c) = v.expect("step computed");
-            exact_checks += c;
+            checks += c;
             r
         })
         .collect();
-    let first_clash = res.iter().position(|r| r.clash > 0.0 || r.no_volume > 0);
+    (res, checks)
+}
+
+pub fn do_motion(app: &mut App, p_in: &MotionParams) -> anyhow::Result<(String, Option<Vec<u8>>)> {
+    let t0 = Instant::now();
+    app.refresh()?;
+    let spec = resolve_motion(app, p_in)?;
+    let sc = &app.scene;
+    let (steps, horizon, rot, moving) = (spec.steps, spec.horizon, spec.rot, spec.moving.clone());
+    let p = spec.p.clone();
+    let ts: Vec<f32> = (0..=steps).map(|k| k as f32 / steps as f32).collect();
+    let (res, exact_checks) = check_many(sc, &spec, &ts);
+    let first_clash = res.iter().position(|r| r.interfering());
     let first_touch = res.iter().position(|r| r.min.is_some_and(|(d, _, _)| d < 0.01));
     let tightest = res.iter().enumerate().filter_map(|(k, r)| r.min.map(|(d, a, b)| (k, d, a, b))).min_by(|x, y| x.1.total_cmp(&y.1));
 
@@ -1049,7 +1138,7 @@ pub fn do_motion(app: &mut App, p_in: &MotionParams) -> anyhow::Result<(String, 
             .collect();
         let mut rp = p.render.clone().unwrap_or_default();
         rp.cols = rp.cols.or(Some(if idx.len() <= 4 { 2 } else { 3 }));
-        let out = do_render_frames(app, &rp, Some(Frames { poses, labels }))?;
+        let out = do_render_frames(app, &rp, Some(Frames { poses, labels, raw: false }))?;
         let _ = writeln!(s, "frames: steps {:?}; {}", idx, out.text.lines().next().unwrap_or(""));
         png = Some(out.png);
     }
@@ -1061,6 +1150,28 @@ pub fn do_motion(app: &mut App, p_in: &MotionParams) -> anyhow::Result<(String, 
         let _ = writeln!(s, "saved motion {name:?} in {}", app.save_project()?);
     }
     Ok((s, png))
+}
+
+fn resolve_materials(sc: &Scene, spec: &Option<BTreeMap<String, String>>, notes: &mut Vec<String>) -> anyhow::Result<Vec<photo::Material>> {
+    let mut materials: Vec<photo::Material> =
+        sc.parts.iter().map(|part| photo::auto_material(part.file_color.unwrap_or([0.74, 0.77, 0.81]))).collect();
+    if let Some(ms) = spec {
+        for (sel, name) in ms {
+            let (ix, missing) = sc.select(std::slice::from_ref(sel));
+            if !missing.is_empty() {
+                notes.push(format!("no part matched {sel:?}"));
+            }
+            let m = match photo::material_preset(&name.to_ascii_lowercase()) {
+                Some(m) => m,
+                None if name.starts_with('#') => photo::Material { color: parse_hex(name)?, metallic: 0.0, roughness: 0.4, anisotropic: 0.0 },
+                None => anyhow::bail!("unknown material {name:?}"),
+            };
+            for i in ix {
+                materials[i] = m;
+            }
+        }
+    }
+    Ok(materials)
 }
 
 pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, String)> {
@@ -1089,25 +1200,8 @@ pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, Stri
     let resolved = do_render(app, &rp)?;
     let cam = *resolved.cams.first().ok_or_else(|| anyhow::anyhow!("no camera"))?;
     let sc = &app.scene;
-    let mut materials: Vec<photo::Material> =
-        sc.parts.iter().map(|part| photo::auto_material(part.file_color.unwrap_or([0.74, 0.77, 0.81]))).collect();
     let mut notes = Vec::new();
-    if let Some(ms) = &p.materials {
-        for (sel, name) in ms {
-            let (ix, missing) = sc.select(std::slice::from_ref(sel));
-            if !missing.is_empty() {
-                notes.push(format!("no part matched {sel:?}"));
-            }
-            let m = match photo::material_preset(&name.to_ascii_lowercase()) {
-                Some(m) => m,
-                None if name.starts_with('#') => photo::Material { color: parse_hex(name)?, metallic: 0.0, roughness: 0.4, anisotropic: 0.0 },
-                None => anyhow::bail!("unknown material {name:?}"),
-            };
-            for i in ix {
-                materials[i] = m;
-            }
-        }
-    }
+    let materials = resolve_materials(sc, &p.materials, &mut notes)?;
     let bg = match &p.background {
         Some(h) => parse_hex(h)?,
         None => [0.92, 0.93, 0.95],
@@ -1145,6 +1239,176 @@ pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, Stri
         let _ = write!(text, "\nnote: {n}");
     }
     Ok((out.png, text))
+}
+
+pub fn do_video(app: &mut App, p: &VideoParams) -> anyhow::Result<(Vec<u8>, String)> {
+    use crate::video::{self, Frame};
+    let t0 = Instant::now();
+    app.refresh()?;
+    let mut mp = p.motion.clone().unwrap_or_default();
+    if mp.run.is_none() {
+        mp.run = p.run.clone();
+    }
+    let spec = resolve_motion(app, &mp)?;
+    let fps = p.fps.unwrap_or(30).clamp(1, 120);
+    let n = ((p.seconds.unwrap_or(3.0).clamp(0.1, 120.0) * fps as f32).round() as usize).max(2);
+    let even = |v: u32| (v.clamp(64, 3840) / 2) * 2;
+    let (w, h) = (even(p.width.unwrap_or(1280)), even(p.height.unwrap_or(720)));
+    let photo_mode = match p.renderer.as_deref().unwrap_or("fast") {
+        "fast" => false,
+        "photo" => true,
+        o => anyhow::bail!("renderer must be fast or photo (got {o:?})"),
+    };
+    let format = p.format.clone().unwrap_or_else(|| "mp4".into());
+    anyhow::ensure!(format == "mp4" || format == "gif", "format must be mp4 or gif");
+    let ts: Vec<f32> = (0..n).map(|k| k as f32 / (n - 1) as f32).collect();
+
+    // Exact checks per distinct frame.
+    let annotate = p.annotate.unwrap_or(true);
+    let t_checks = Instant::now();
+    let checks = if annotate { Some(check_many(&app.scene, &spec, &ts).0) } else { None };
+    let checks_ms = t_checks.elapsed().as_secs_f64() * 1e3;
+    let label = |k: usize| -> String {
+        let base = format!("T={:.2}S", k as f32 / fps as f32);
+        match &checks {
+            Some(c) if c[k].interfering() => format!("{base}  CLASH"),
+            Some(c) => match c[k].min {
+                Some((d, _, _)) => format!("{base}  {d:.1} MM"),
+                None => format!("{base}  >{:.0} MM", spec.horizon),
+            },
+            None => base,
+        }
+    };
+    let poses: Vec<Vec<Mat4>> = ts.iter().map(|&t| spec.poses_at(&app.scene, t)).collect();
+
+    // One fixed camera for the whole clip, framing every frame's pose.
+    let mut rp = p.render.clone().unwrap_or_default();
+    rp.width = Some(160);
+    rp.height = Some(((160 * h) / w).max(16));
+    let sample: Vec<usize> = (0..16).map(|k| k * (n - 1) / 15).collect();
+    let probe = do_render_frames(
+        app,
+        &rp,
+        Some(Frames { poses: sample.iter().map(|&k| poses[k].clone()).collect(), labels: sample.iter().map(|_| String::new()).collect(), raw: true }),
+    )?;
+    let cam = probe.cams[0];
+    let mut rp = p.render.clone().unwrap_or_default();
+    rp.cameras = Some(vec![cam]);
+    rp.width = Some(w);
+    rp.height = Some(h);
+    rp.cols = Some(1);
+
+    let t_frames = Instant::now();
+    let mut frames: Vec<Frame> = Vec::with_capacity(n);
+    let mut notes = Vec::new();
+    if photo_mode {
+        rp.labels = Some(false);
+        rp.scale_bar = Some(false);
+        let resolved = do_render_frames(app, &rp, Some(Frames { poses: vec![poses[0].clone()], labels: vec![String::new()], raw: true }))?;
+        let materials = resolve_materials(&app.scene, &p.materials, &mut notes)?;
+        let work_dir = std::env::temp_dir().join(format!("shapeshot-video-{}", std::process::id()));
+        for (k, pose) in poses.iter().enumerate() {
+            let out = photo::photo(&photo::PhotoReq {
+                scene: &app.scene,
+                cam,
+                width: w,
+                height: h,
+                styles: &resolved.styles,
+                poses: pose,
+                materials: materials.clone(),
+                samples: p.samples.unwrap_or(16).clamp(1, 4096),
+                floor: p.floor.unwrap_or(true),
+                background: [0.92, 0.93, 0.95],
+                timeout: std::time::Duration::from_secs(600),
+                exposure: p.exposure.unwrap_or(0.0),
+                work_dir: work_dir.clone(),
+            })?;
+            let mut f = out.frame;
+            if annotate {
+                let mut cv = crate::font::Canvas { px: &mut f.rgba, w: f.w, h: f.h };
+                cv.label(12, 10, &label(k), 2, [40, 44, 52, 255], [255, 255, 255, 190]);
+            }
+            frames.push(f);
+        }
+    } else {
+        for (k, pose) in poses.iter().enumerate() {
+            let out = do_render_frames(app, &rp, Some(Frames { poses: vec![pose.clone()], labels: vec![label(k)], raw: true }))?;
+            frames.push(out.frame.ok_or_else(|| anyhow::anyhow!("no frame"))?);
+        }
+    }
+    let frames_ms = t_frames.elapsed().as_secs_f64() * 1e3;
+
+    // Sequence: forward, optional back, hold.
+    let mut order: Vec<usize> = (0..n).collect();
+    if p.pingpong.unwrap_or(false) {
+        order.extend((1..n - 1).rev());
+    }
+    let hold = (p.hold.unwrap_or(0.5).max(0.0) * fps as f32).round() as usize;
+    let last = *order.last().unwrap();
+    order.extend(std::iter::repeat_n(last, hold));
+    let seq: Vec<Frame> = order.iter().map(|&k| Frame { w: frames[k].w, h: frames[k].h, rgba: frames[k].rgba.clone() }).collect();
+
+    let path = match &p.save {
+        Some(s) => std::path::PathBuf::from(s),
+        None => {
+            let dir = app.project_path.as_ref().and_then(|pp| pp.parent().map(|d| d.join("videos"))).unwrap_or_else(std::env::temp_dir);
+            std::fs::create_dir_all(&dir)?;
+            dir.join(format!("{}.{format}", spec.p.run.clone().or(p.run.clone()).unwrap_or_else(|| "motion".into())))
+        }
+    };
+    let t_enc = Instant::now();
+    if format == "mp4" {
+        video::write_mp4(&path, &seq, fps)?;
+    } else {
+        video::write_gif(&path, &seq, fps)?;
+    }
+    let enc_ms = t_enc.elapsed().as_secs_f64() * 1e3;
+
+    // Contact sheet of 6 key frames (always including the first interference/contact).
+    let mut keys: Vec<usize> = (0..6).map(|k| k * (n - 1) / 5).collect();
+    if let Some(c) = &checks
+        && let Some(k) = c.iter().position(|r| r.interfering()).or_else(|| c.iter().position(|r| r.min.is_some_and(|(d, _, _)| d < 0.01)))
+        && !keys.contains(&k)
+    {
+        let j = keys.iter().enumerate().min_by_key(|(_, v)| v.abs_diff(k)).map(|(j, _)| j).unwrap_or(0);
+        keys[j] = k;
+        keys.sort();
+    }
+    let thumbs: Vec<Frame> = keys.iter().map(|&k| video::downscale(&frames[k], 640, 400)).collect();
+    let sheet = video::encode_png(&video::sheet(&thumbs, 3))?;
+
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let mut text = format!(
+        "{} {}x{} @ {fps} fps, {} frames ({:.1} s) -> {} ({} KB)\nrenderer {}: frames {:.1} s ({:.0} ms/frame), checks {:.0} ms, encode {:.0} ms, total {:.1} s\nsheet: frames {:?}",
+        format.to_uppercase(),
+        w,
+        h,
+        seq.len(),
+        seq.len() as f32 / fps as f32,
+        path.display(),
+        size / 1024,
+        if photo_mode { "photo (Cycles)" } else { "fast (GPU)" },
+        frames_ms / 1e3,
+        frames_ms / n as f64,
+        checks_ms,
+        enc_ms,
+        t0.elapsed().as_secs_f64(),
+        keys
+    );
+    if let Some(c) = &checks {
+        if let Some(k) = c.iter().position(|r| r.interfering()) {
+            let (a, b) = c[k].clash_pair.unwrap_or((0, 0));
+            let _ = write!(text, "\nFIRST INTERFERENCE at frame {k} (t={:.2}): {} <-> {}", c[k].t, short_path(&app.scene, a), short_path(&app.scene, b));
+        } else if let Some((k, d)) = c.iter().enumerate().filter_map(|(k, r)| r.min.map(|(d, _, _)| (k, d))).min_by(|x, y| x.1.total_cmp(&y.1)) {
+            let _ = write!(text, "\nno interference; tightest {d:.2} mm at frame {k}");
+        } else {
+            let _ = write!(text, "\nno interference; nothing within {:.0} mm", spec.horizon);
+        }
+    }
+    for nn in notes {
+        let _ = write!(text, "\nnote: {nn}");
+    }
+    Ok((sheet, text))
 }
 
 // ---------- tools ----------
@@ -1258,6 +1522,15 @@ impl Shapeshot {
     async fn photo(&self, Parameters(p): Parameters<PhotoParams>) -> Result<CallToolResult, ErrorData> {
         self.with_app(move |app| {
             let (png, text) = do_photo(app, &p)?;
+            Ok(CallToolResult::success(vec![ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(&png), "image/png"), ContentBlock::text(text)]))
+        })
+        .await
+    }
+
+    #[tool(description = "Record a motion (saved via `motion {save_as}` or inline) as an MP4 (hardware H.264) or GIF with a fixed camera. renderer \"fast\" (CAD look, exact clearance burned into every frame) or \"photo\" (Cycles path tracing, seconds per frame). Returns a contact sheet of key frames inline and the video path.")]
+    async fn video(&self, Parameters(p): Parameters<VideoParams>) -> Result<CallToolResult, ErrorData> {
+        self.with_app(move |app| {
+            let (png, text) = do_video(app, &p)?;
             Ok(CallToolResult::success(vec![ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(&png), "image/png"), ContentBlock::text(text)]))
         })
         .await

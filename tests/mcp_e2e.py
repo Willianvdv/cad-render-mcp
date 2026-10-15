@@ -199,7 +199,16 @@ def main():
     r, t, _ = step(c, "clash tilted", "move", {"parts": ["PLACEHOLDERS:1#1"], "rotate": {"axis": "x", "deg": 10, "origin": [0, 2018.8, 189.4]}})
     r, t, _ = step(c, "clash at 10deg", "clash", {"parts": ["PLACEHOLDERS:1#1", "BAR_ISB*"]})
     check(t.count("CLASH") == 5, "all 5 bars under the tilted wheel reported (incl. failed-boolean fallback)")
-    # 16. photo (Cycles) when available
+    # 16. video: saved motion -> MP4 (hardware H.264) and GIF, fast renderer, clearance burned in
+    mp4 = os.path.join(OUT, "tip.mp4")
+    r, t, img = step(c, "video mp4", "video", {"run": "tip", "render": {"views": ["right"]}, "width": 640, "height": 360, "fps": 15, "seconds": 2, "save": mp4}, True)
+    check(os.path.exists(mp4) and open(mp4, "rb").read(12)[4:8] == b"ftyp", "MP4 written (ftyp box)")
+    check("FIRST INTERFERENCE" in t and "FRONT_PLATE" in t, "video reports the first interference")
+    gif = os.path.join(OUT, "tip.gif")
+    r, t, img = step(c, "video gif", "video", {"run": "tip", "format": "gif", "width": 320, "height": 180, "fps": 10, "seconds": 1, "annotate": False, "save": gif}, True)
+    check(os.path.exists(gif) and open(gif, "rb").read(6) == b"GIF89a", "GIF written")
+
+    # 17. photo (Cycles) when available
     cycles = os.environ.get("SHAPESHOT_CYCLES", os.path.expanduser("~/src/shapeshot-deps/cycles/install/cycles"))
     if os.path.exists(cycles):
         r, t, img = step(c, "photo", "photo", {"preset": "lamps", "width": 640, "height": 400, "samples": 16, "timeout_s": 600}, True)

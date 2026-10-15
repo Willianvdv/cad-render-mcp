@@ -95,6 +95,7 @@ pub struct PhotoReq<'a> {
 
 pub struct PhotoOut {
     pub png: Vec<u8>,
+    pub frame: crate::video::Frame,
     pub export_ms: f64,
     pub render_ms: f64,
     pub tris: usize,
@@ -309,14 +310,15 @@ pub fn photo(r: &PhotoReq) -> anyhow::Result<PhotoOut> {
     let log_tail = format!("{}\n{}", tail(log), tail(r.work_dir.join("cycles.err")));
     anyhow::ensure!(status.success() && out.exists(), "Cycles failed ({status}):\n{log_tail}");
     let t2 = Instant::now();
-    let png = tonemap_exr(&out, r.exposure)?;
+    let frame = tonemap_exr(&out, r.exposure)?;
     let _ = t2;
-    Ok(PhotoOut { png, export_ms, render_ms, tris })
+    let png = crate::video::encode_png(&frame)?;
+    Ok(PhotoOut { png, frame, export_ms, render_ms, tris })
 }
 
 
 /// Linear scene-referred EXR -> display PNG: exposure, filmic shoulder (ACES fit), sRGB encoding.
-fn tonemap_exr(path: &std::path::Path, exposure_stops: f32) -> anyhow::Result<Vec<u8>> {
+fn tonemap_exr(path: &std::path::Path, exposure_stops: f32) -> anyhow::Result<crate::video::Frame> {
     use exr::prelude::*;
     let img = read_first_rgba_layer_from_file(
         path,
@@ -332,19 +334,12 @@ fn tonemap_exr(path: &std::path::Path, exposure_stops: f32) -> anyhow::Result<Ve
         ((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14)).clamp(0.0, 1.0)
     };
     let srgb = |c: f32| if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
-    let mut rgb = Vec::with_capacity(w * h * 3);
+    let mut rgba = Vec::with_capacity(w * h * 4);
     for p in &px {
         for c in &p[..3] {
-            rgb.push((srgb(aces(*c)) * 255.0 + 0.5) as u8);
+            rgba.push((srgb(aces(*c)) * 255.0 + 0.5) as u8);
         }
+        rgba.push(255);
     }
-    let mut out = Vec::new();
-    {
-        let mut e = png::Encoder::new(&mut out, w as u32, h as u32);
-        e.set_color(png::ColorType::Rgb);
-        e.set_depth(png::BitDepth::Eight);
-        e.set_compression(png::Compression::Fast);
-        e.write_header()?.write_image_data(&rgb)?;
-    }
-    Ok(out)
+    Ok(crate::video::Frame { w: w as u32, h: h as u32, rgba })
 }

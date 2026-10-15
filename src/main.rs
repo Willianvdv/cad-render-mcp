@@ -8,6 +8,7 @@ mod project;
 mod render;
 mod scene;
 mod server;
+mod video;
 
 use rmcp::ServiceExt;
 use std::os::fd::FromRawFd;

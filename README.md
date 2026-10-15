@@ -71,6 +71,7 @@ shapeshot looks for `$SHAPESHOT_CYCLES`, then `cycles/cycles` next to its own bi
 | `save_view` | store the last render (all options + the exact cameras) as a named view; `render {preset}` reproduces it pixel-for-pixel in any session, even after the model changes |
 | `saved` | list (or delete) the project's saved views, poses and motions |
 | `photo` | photo-realistic still, path-traced with Cycles on the GPU (Metal): physical materials (`materials {selector: aluminium/steel/zinc/rubber/…/#hex}`, guessed from CAD colours by default), studio light, shadowed floor, denoised. Same viewpoint options as `render` (saved views, poses) |
+| `video` | record a motion (saved or inline) as MP4 (H.264 via AVFoundation/VideoToolbox) or GIF with a fixed camera framing the whole movement; `renderer` `fast` (~2 ms/frame, exact clearance burned into each frame) or `photo` (Cycles, ~1.5 s/frame). Returns a contact sheet of key frames inline |
 | `close` | unload everything |
 
 Saved views, poses and motions live in `.shapeshot.json` next to the first opened file (override
@@ -108,6 +109,7 @@ Dual-licensed MIT OR Apache-2.0. OCCT is used as an external LGPL-2.1 (+ Open CA
 Exception) shared library; see [NOTICE.md](NOTICE.md) for what binary distributions must include.
 
 ## Roadmap
+- keep one Cycles process alive across video frames (today each frame restarts it)
 - bundle Cycles in release archives (Apache-2.0; ship its license + notices)
 
 - on-disk cache of parsed shapes (OCCT binary BRep) for instant re-open of big unchanged STEP files
