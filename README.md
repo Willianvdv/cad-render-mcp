@@ -286,7 +286,9 @@ cargo run --release -- bench examples/demo_rack.step -o /tmp/bench.png
 ```
 
 CI (GitHub Actions, macOS arm64) runs fmt, clippy `-D warnings`, the unit tests and the end-to-end
-suite. `tests/e2e_roofrack.py` and `scripts/gallery_roofrack.json` (which produced the images above)
+suite. The security workflow scans the full git history for leaked secrets (gitleaks), checks every
+dependency for advisories, licences and sources (`cargo deny check`, policy in `deny.toml`), and runs
+CodeQL once the repository is public. Dependabot keeps crates and actions up to date. `tests/e2e_roofrack.py` and `scripts/gallery_roofrack.json` (which produced the images above)
 need the example project's private STEP files in `testdata/` and skip otherwise.
 
 ## Licence
