@@ -9,7 +9,7 @@ jobs:
   macos:
     runs-on: macos-15 # Apple Silicon
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: OpenCascade
         run: brew install opencascade
       - uses: dtolnay/rust-toolchain@stable
@@ -30,7 +30,7 @@ jobs:
           ./target/release/cad-render-mcp bench /tmp/demo.step || true
       - name: End-to-end over MCP stdio (GPU checks skip when the runner has no Metal device)
         run: python3 tests/e2e_demo.py --out e2e-out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-images
