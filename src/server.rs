@@ -69,8 +69,9 @@ pub struct SectionSpec {
     pub normal: Option<[f32; 3]>,
     /// Plane position along the normal in mm (default: centre of the visible parts).
     pub offset: Option<f32>,
-    /// Material on the +normal side is removed; set true to remove the other side.
-    pub flip: Option<bool>,
+    /// Which half to remove: "auto" (default: the half facing each view's camera, so the cut is
+    /// always visible), "positive" (the +normal side) or "negative".
+    pub remove: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -111,6 +112,8 @@ pub struct RenderParams {
     pub section: Option<SectionSpec>,
     /// Perspective projection (default false = orthographic, measurable with the scale bar).
     pub perspective: Option<bool>,
+    /// Frame this box instead: [xmin, ymin, zmin, xmax, ymax, zmax] in mm (for close-ups of one spot).
+    pub region: Option<[f32; 6]>,
     /// Zoom factor (>1 zooms in, default 1).
     pub zoom: Option<f32>,
     /// Model up axis: "z" (default) or "y".
@@ -355,7 +358,12 @@ pub fn do_render(app: &mut App, p: &RenderParams) -> anyhow::Result<Rendered> {
                 Some(o) => o,
                 None => sc.bounds(&vis).map(|(lo, hi)| ((lo + hi) * 0.5).dot(nrm)).unwrap_or(0.0),
             };
-            if s.flip.unwrap_or(false) { Some((-nrm, -off)) } else { Some((nrm, off)) }
+            match s.remove.as_deref().unwrap_or("auto") {
+                "auto" => Some((nrm, off, true)),
+                "positive" | "+" => Some((nrm, off, false)),
+                "negative" | "-" => Some((-nrm, -off, false)),
+                o => anyhow::bail!("section.remove must be auto, positive or negative (got {o:?})"),
+            }
         }
     };
     let edges = match p.edges.as_deref().unwrap_or("all") {
@@ -387,6 +395,7 @@ pub fn do_render(app: &mut App, p: &RenderParams) -> anyhow::Result<Rendered> {
         boxes: sc.parts.iter().map(|p| (p.bmin, p.bmax)).collect(),
         anchors: sc.parts.iter().map(|p| p.anchor).collect(),
         focus,
+        region: p.region.map(|b| (Vec3::new(b[0], b[1], b[2]).min(Vec3::new(b[3], b[4], b[5])), Vec3::new(b[0], b[1], b[2]).max(Vec3::new(b[3], b[4], b[5])))),
         edges,
         silhouettes: p.silhouettes.unwrap_or(true),
         edge_px: p.edge_width.unwrap_or(1.6).clamp(0.5, 8.0),
@@ -419,8 +428,9 @@ pub fn do_render(app: &mut App, p: &RenderParams) -> anyhow::Result<Rendered> {
         out.encode_ms,
         out.png.len() / 1024
     );
-    if let Some((nrm, off)) = section {
-        let _ = write!(text, "; section n=[{:.2},{:.2},{:.2}] at {:.1} mm (material beyond removed, cut faces in cap colour)", nrm.x, nrm.y, nrm.z, off);
+    if let Some((nrm, off, auto)) = section {
+        let side = if auto { "camera-facing half removed per view" } else { "+normal side removed" };
+        let _ = write!(text, "; section n=[{:.2},{:.2},{:.2}] at {:.1} mm ({side}, cut faces in cap colour)", nrm.x, nrm.y, nrm.z, off);
     }
     if p.part_labels.unwrap_or(false) {
         let legend: Vec<String> = vis.iter().map(|&i| format!("{}={}", app.scene.parts[i].id, app.scene.parts[i].path)).collect();

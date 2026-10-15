@@ -49,7 +49,7 @@ claude mcp add shapeshot -- "$PWD/target/release/shapeshot"
 | tool | what it does |
 |---|---|
 | `open` | load files or directories (`split_solids` gives one part per body); returns part ids, sizes, timings |
-| `render` | PNG inline. `views` tile into one image: `iso`, `iso_fl/br/bl`, `iso_below`, `front/back/left/right/top/bottom`, `az30el20`, `dir:x,y,z`. Options: `show`, `hide`, `highlight` (others ghosted), `ghost`, `focus`, `zoom`, `colors`, `color_by` (`file`/`part`/`uniform`), `style` (`shaded`/`xray`/`lines`), `edges` (`all`/`sharp`/`none`), `silhouettes`, `section {axis/normal, offset, flip}`, `perspective`, `up` (`z`/`y`), `background`, `labels`, `part_labels`, `scale_bar`, `save` |
+| `render` | PNG inline. `views` tile into one image: `iso`, `iso_fl/br/bl`, `iso_below`, `front/back/left/right/top/bottom`, `az30el20`, `dir:x,y,z`. Options: `show`, `hide`, `highlight` (others ghosted), `ghost`, `focus`, `zoom`, `colors`, `color_by` (`file`/`part`/`uniform`), `style` (`shaded`/`xray`/`lines`), `edges` (`all`/`sharp`/`none`), `silhouettes`, `section {axis/normal, offset, remove: auto|positive|negative}`, `region` (frame an mm box), `perspective`, `up` (`z`/`y`), `background`, `labels`, `part_labels`, `scale_bar`, `save` |
 | `parts` | list parts (id, assembly path, file, bbox size, triangles) |
 | `inspect` | exact volume, area, mass (`density`), centroid, bbox, topology counts, face types, cylinder radii (bend radii, holes), torus radii |
 | `measure` | exact minimum distance between two parts, with the closest points |

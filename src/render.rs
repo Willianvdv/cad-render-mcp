@@ -78,10 +78,14 @@ pub struct RenderReq<'a> {
     pub anchors: Vec<Vec3>,
     /// Indices of the parts to frame (empty = all visible).
     pub focus: Vec<usize>,
+    /// Explicit box (min, max) to frame; overrides `focus`.
+    pub region: Option<(Vec3, Vec3)>,
     pub edges: Edges,
     pub silhouettes: bool,
     pub edge_px: f32,
-    pub section: Option<(Vec3, f32)>,
+    /// Section plane (normal, offset, auto): keeps dot(n, p) <= offset; with `auto` each view
+    /// removes the half facing its camera instead, so the cut face is always visible.
+    pub section: Option<(Vec3, f32, bool)>,
     pub background: Option<[f32; 3]>,
     pub labels: bool,
     pub scale_bar: bool,
@@ -355,7 +359,12 @@ impl Renderer {
             }
             v
         };
-        let frame_pts = corners(&frame_set);
+        let frame_pts = match r.region {
+            Some((a, b)) => (0..8)
+                .map(|k| Vec3::new(if k & 1 == 0 { a.x } else { b.x }, if k & 2 == 0 { a.y } else { b.y }, if k & 4 == 0 { a.z } else { b.z }))
+                .collect(),
+            None => corners(&frame_set),
+        };
         let scene_pts = corners(&visible);
 
         // Uniforms: one camera block per view, one style block per part.
@@ -369,7 +378,8 @@ impl Renderer {
             let f = camera::fit(v.dir, r.up, &frame_pts, &scene_pts, aspect, r.zoom, r.perspective, r.tile_h);
             let light = (-f.dir * 0.8 + f.up * 0.45 - f.right * 0.35).normalize();
             let (clip, on) = match r.section {
-                Some((nrm, d)) => ([nrm.x, nrm.y, nrm.z, d], 1.0),
+                Some((nrm, d, auto)) if auto && f.dir.dot(nrm) > 0.0 => ([-nrm.x, -nrm.y, -nrm.z, -d], 1.0),
+                Some((nrm, d, _)) => ([nrm.x, nrm.y, nrm.z, d], 1.0),
                 None => ([0.0; 4], 0.0),
             };
             let u = CameraU {
