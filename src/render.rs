@@ -541,6 +541,9 @@ impl Renderer {
                 }
                 let sx = tx as f32 + (c.x / c.w * 0.5 + 0.5) * r.tile_w as f32;
                 let sy = ty as f32 + (0.5 - c.y / c.w * 0.5) * r.tile_h as f32;
+                if sx < tx as f32 || sx >= (tx + r.tile_w) as f32 || sy < ty as f32 || sy >= (ty + r.tile_h) as f32 {
+                    continue; // anchor outside this tile (e.g. a zoomed region): no label
+                }
                 let (tw, th) = Canvas::text_size(name, 2);
                 let (bw, bh) = (tw + 8, th + 8);
                 for dy in [0, 1, -1, 2, -2, 3, -3] {

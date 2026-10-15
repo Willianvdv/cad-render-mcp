@@ -433,7 +433,10 @@ pub fn do_render(app: &mut App, p: &RenderParams) -> anyhow::Result<Rendered> {
         let _ = write!(text, "; section n=[{:.2},{:.2},{:.2}] at {:.1} mm ({side}, cut faces in cap colour)", nrm.x, nrm.y, nrm.z, off);
     }
     if p.part_labels.unwrap_or(false) {
-        let legend: Vec<String> = vis.iter().map(|&i| format!("{}={}", app.scene.parts[i].id, app.scene.parts[i].path)).collect();
+        // Shorten paths by the common assembly prefix to keep the legend compact.
+        let paths: Vec<&str> = vis.iter().map(|&i| app.scene.parts[i].path.as_str()).collect();
+        let prefix = paths.first().and_then(|p| p.rfind('/').map(|k| &p[..=k])).filter(|pre| paths.iter().all(|p| p.starts_with(pre))).unwrap_or("");
+        let legend: Vec<String> = vis.iter().map(|&i| format!("{}={}", app.scene.parts[i].id, &app.scene.parts[i].path[prefix.len()..])).collect();
         let _ = write!(text, "\nlabels: {}", legend.join(", "));
     }
     for nn in notes {
