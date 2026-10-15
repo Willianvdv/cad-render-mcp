@@ -200,6 +200,7 @@ def main():
     r, t, _ = step(c, "clash at 10deg", "clash", {"parts": ["PLACEHOLDERS:1#1", "BAR_ISB*"]})
     check(t.count("CLASH") == 5, "all 5 bars under the tilted wheel reported (incl. failed-boolean fallback)")
     # 16. video: saved motion -> MP4 (hardware H.264) and GIF, fast renderer, clearance burned in
+    c.call("move", {"reset": True})  # the clash test above left the wheel tilted into the bars
     mp4 = os.path.join(OUT, "tip.mp4")
     r, t, img = step(c, "video mp4", "video", {"run": "tip", "render": {"views": ["right"]}, "width": 640, "height": 360, "fps": 15, "seconds": 2, "save": mp4}, True)
     check(os.path.exists(mp4) and open(mp4, "rb").read(12)[4:8] == b"ftyp", "MP4 written (ftyp box)")
