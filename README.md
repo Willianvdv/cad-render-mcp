@@ -1,4 +1,4 @@
-# cad-render-mcp
+# SHOW ME THE THING!
 
 **A fast feedback loop for CAD: your AI agent sees, measures and presents your models in milliseconds.**
 
