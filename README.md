@@ -12,6 +12,46 @@
 * videos as MP4, CAD-style or photorealistic
 * exact numbers: volume, area, mass, radii, distances, clearances and interference
 
+![Photo-realistic render](docs/gallery/12_photo_hero.png)
+
+| CAD-style fly-around, 195 frames in 1 s | Photo-realistic fly-around (Cycles) |
+|---|---|
+| ![swoop](docs/gallery/swoop.gif) | ![photo swoop](docs/gallery/swoop_photo.gif) |
+
+| Studio close-up | On a backdrop, with its shadow |
+|---|---|
+| ![](docs/gallery/13_photo_closeup.png) | ![](docs/gallery/14_photo_backdrop.png) |
+
+| Four views in one call | "Can this part tip up?" Clears the bars (2.6 → 26 mm), hits the front plate at ~75° |
+|---|---|
+| ![Four views](docs/gallery/01_overview.png) | ![Motion contact sheet](docs/gallery/11_wheel_tip_motion.png) |
+
+| Highlight + labels | X-ray, perspective |
+|---|---|
+| ![](docs/gallery/02_bars_highlighted.png) | ![](docs/gallery/05_xray_front.png) |
+
+| Section: how one part seats on another | Close-up of a small region |
+|---|---|
+| ![](docs/gallery/03_section_bar_seat.png) | ![](docs/gallery/04_rear_corner_r25.png) |
+
+| Saved view | Same frozen view, after moving parts 40 mm up |
+|---|---|
+| ![](docs/gallery/08_lamps.png) | ![](docs/gallery/09_lamps_up40.png) |
+
+![Clash close-up](docs/gallery/10_tnut_clash.png)
+<sub>A 352 mm³ interference found by `clash`, shown with `highlight` + `xray` on a `region`.</sub>
+
+![Line drawing](docs/gallery/06_side_plate_drawing.png)
+<sub>`style: "lines", edges: "sharp"`: a laser-cut part as a clean drawing.</sub>
+
+![Motion as a GIF](docs/gallery/wheel_tip_up.gif)
+<sub>A part motion as a GIF, annotated frame by frame (`video` with `annotate`).</sub>
+
+<sub>All images in this README come from one example project, a van roof rack. They were made by
+the tools below, unedited.</sub>
+
+---
+
 **A fast feedback loop for CAD: your AI agent sees, measures and presents your models in milliseconds.**
 
 `cad-render-mcp` is a headless CAD viewer and geometry checker that speaks only
@@ -25,15 +65,6 @@ and it can:
 * produce photo-realistic stills and videos when you need to show it.
 
 It runs headless as a single binary and works straight from your model files.
-
-![Photo-realistic render](docs/gallery/12_photo_hero.png)
-
-| CAD-style fly-around, 195 frames in 1 s | Photo-realistic fly-around (Cycles) |
-|---|---|
-| ![swoop](docs/gallery/swoop.gif) | ![photo swoop](docs/gallery/swoop_photo.gif) |
-
-<sub>All images in this README come from one example project, a van roof rack. They were made by
-the tools below, unedited.</sub>
 
 ---
 
@@ -87,8 +118,6 @@ re-runs it, and calls `render`.
 
 ### Look: any view, any style, in one call
 
-![Four views](docs/gallery/01_overview.png)
-
 ```json
 render {"views": ["iso", "iso_br", "right", "top"]}
 ```
@@ -104,17 +133,6 @@ render {"views": ["iso", "iso_br", "right", "top"]}
   faces always show.
 * **Backgrounds:** a colour, transparent, or `background_image` (put the model on a photo).
 
-| Highlight + labels | X-ray, perspective |
-|---|---|
-| ![](docs/gallery/02_bars_highlighted.png) | ![](docs/gallery/05_xray_front.png) |
-
-| Section: how one part seats on another | Close-up of a small region |
-|---|---|
-| ![](docs/gallery/03_section_bar_seat.png) | ![](docs/gallery/04_rear_corner_r25.png) |
-
-![Line drawing](docs/gallery/06_side_plate_drawing.png)
-<sub>`style: "lines", edges: "sharp"`: a laser-cut part as a clean drawing.</sub>
-
 ### Measure: exact numbers from the B-rep
 
 * **`inspect`**: volume, area, mass (`density`), centroid, bounding box, topology, face types,
@@ -124,9 +142,6 @@ render {"views": ["iso", "iso_br", "right", "top"]}
 * **`clash`**: interference volume for every overlapping pair, optionally the touching pairs. It
   uses fuzzy booleans, a retry ladder and point classification to confirm every contact.
 
-![Clash close-up](docs/gallery/10_tnut_clash.png)
-<sub>A 352 mm³ interference found by `clash`, shown with `highlight` + `xray` on a `region`.</sub>
-
 ### Move: poses and motions
 
 * **`move`**: translate or rotate parts about any axis. Renders, measurements and clash checks use
@@ -135,19 +150,11 @@ render {"views": ["iso", "iso_br", "right", "top"]}
   nearby parts and any interference, then the first contact, with a contact sheet from a fixed
   camera. Save it and re-run it after every model change.
 
-![Motion contact sheet](docs/gallery/11_wheel_tip_motion.png)
-<sub>"Can this part tip up?" It clears the bars (2.6 → 26 mm) and first hits the front plate at
-~75°, found in about a second.</sub>
-
 ### Compare: frozen views
 
 `save_view` stores the last render (all options plus the exact camera) in `.cad-render.json` next
 to the model; `render {preset: "name"}` reproduces it pixel-for-pixel in any later session, even
 after the model changed.
-
-| Saved view | Same frozen view, after moving parts 40 mm up |
-|---|---|
-| ![](docs/gallery/08_lamps.png) | ![](docs/gallery/09_lamps_up40.png) |
 
 ### Present: photos and videos
 
@@ -162,12 +169,6 @@ after the model changed.
   GIF:
   * `fast` frames take about 2 ms each and carry the exact clearance burned in;
   * `photo` frames come from Cycles.
-
-| Studio close-up | On a backdrop, with its shadow |
-|---|---|
-| ![](docs/gallery/13_photo_closeup.png) | ![](docs/gallery/14_photo_backdrop.png) |
-
-![Motion as a GIF](docs/gallery/wheel_tip_up.gif)
 
 ---
 
