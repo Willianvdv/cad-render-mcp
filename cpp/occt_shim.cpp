@@ -726,7 +726,7 @@ void ss_str_free(char* s) { std::free(s); }
 
 const char* ss_occt_version(void) { return OCC_VERSION_COMPLETE; }
 
-// Write a small, named and coloured demo assembly (a miniature roof rack) as STEP: used as the
+// Write a small, named and coloured demo assembly (a small rack carrying a wheel) as STEP: used as the
 // public test fixture and for trying the tools without your own CAD files. Units: mm, Z up,
 // front = +Y.
 int ss_write_demo_step(const char* path, char* err, size_t errlen) {

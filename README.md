@@ -4,8 +4,8 @@
 
 **Output:**
 
-* CAD-style images from any angle, returned inline in about 10 ms: shaded, x-ray, section cuts,
-  highlighted or ghosted parts, colour by part, on a backdrop photo
+* CAD-style images from any angle, returned inline: shaded, x-ray, section cuts, highlighted or
+  ghosted parts, colour by part, on a backdrop photo
 * drawings: orthographic front, top and side views with a scale bar, laid out as ISO 128
   first-angle or third-angle sheets with all views at one scale
 * photorealistic stills (Cycles) with materials, floor and studio, sky or HDRI lighting
@@ -348,8 +348,7 @@ cargo run --release -- bench examples/demo_rack.step -o /tmp/bench.png
 CI (GitHub Actions, macOS arm64) runs fmt, clippy `-D warnings`, the unit tests and the end-to-end
 suite. The security workflow scans the full git history for leaked secrets (gitleaks), checks every
 dependency for advisories, licences and sources (`cargo deny check`, policy in `deny.toml`), and runs
-CodeQL once the repository is public. Dependabot keeps crates and actions up to date. `tests/e2e_roofrack.py` and
-`scripts/gallery_roofrack.json` need private STEP files in `testdata/` and skip otherwise.
+CodeQL. Dependabot keeps crates and actions up to date.
 
 ## Licence
 
