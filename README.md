@@ -13,47 +13,47 @@
 * videos as MP4, CAD-style or photorealistic
 * exact numbers: volume, area, mass, radii, distances, clearances and interference
 
-![Photo-realistic render](docs/gallery/12_photo_hero.png)
+![Photo-realistic cutaway of a turbofan](docs/gallery/turbofan_hero.png)
 
-| CAD-style fly-around, 195 frames in 1 s | Photo-realistic fly-around (Cycles) |
+| CAD-style fly-around, both spools turning: 120 frames in 1.5 s | Photo-realistic fly-around (Cycles) |
 |---|---|
 | ![swoop](docs/gallery/swoop.gif) | ![photo swoop](docs/gallery/swoop_photo.gif) |
 
-| Studio close-up | On a backdrop, with its shadow |
+| Into the intake | The core up close: compressor, combustor ring, turbines (`photo` of a `region`) |
 |---|---|
-| ![](docs/gallery/13_photo_closeup.png) | ![](docs/gallery/14_photo_backdrop.png) |
+| ![](docs/gallery/turbofan_intake.png) | ![](docs/gallery/turbofan_core_closeup.png) |
 
-| Four views in one call | "Can this part tip up?" Clears the bars (2.6 → 26 mm), hits the front plate at ~75° |
+| Four views in one call | "Does the fan clear the casing all the way round?" `motion` turns it one blade pitch: 5.02 mm at every step |
 |---|---|
-| ![Four views](docs/gallery/01_overview.png) | ![Motion contact sheet](docs/gallery/11_wheel_tip_motion.png) |
+| ![Four views](docs/gallery/turbofan_overview.png) | ![Motion contact sheet](docs/gallery/turbofan_fan_turn.png) |
 
-| Highlight + labels | X-ray, perspective |
+| Highlight + labels: both spools and the combustor | X-ray from the side |
 |---|---|
-| ![](docs/gallery/02_bars_highlighted.png) | ![](docs/gallery/05_xray_front.png) |
+| ![](docs/gallery/turbofan_spools.png) | ![](docs/gallery/turbofan_xray.png) |
 
-| Section: how one part seats on another | Close-up of a small region |
+| Section: the whole gas path | Close-up of a region, in section: combustor and turbines |
 |---|---|
-| ![](docs/gallery/03_section_bar_seat.png) | ![](docs/gallery/04_rear_corner_r25.png) |
+| ![](docs/gallery/turbofan_section.png) | ![](docs/gallery/turbofan_combustor_closeup.png) |
 
-| Saved view | Same frozen view, after moving parts 40 mm up |
+| Saved view | Same frozen view, after moving the nacelle 1,600 mm forward |
 |---|---|
-| ![](docs/gallery/08_lamps.png) | ![](docs/gallery/09_lamps_up40.png) |
+| ![](docs/gallery/turbofan_saved_view.png) | ![](docs/gallery/turbofan_nacelle_forward.png) |
 
 | `template: "drawing_first_angle"`: an ISO first-angle sheet | `template: "six_views_third_angle"`: all six views, one scale |
 |---|---|
-| ![](docs/gallery/18_drawing_first_angle.png) | ![](docs/gallery/19_six_views_third_angle.png) |
+| ![](docs/gallery/turbofan_drawing_first_angle.png) | ![](docs/gallery/turbofan_six_views.png) |
 
-![Clash close-up](docs/gallery/10_tnut_clash.png)
-<sub>A 352 mm³ interference found by `clash`, shown with `highlight` + `xray` on a `region`.</sub>
+![Motion as a GIF](docs/gallery/turbofan_nacelle.gif)
+<sub>"Can the nacelle slide forward for maintenance?" `video` checks every frame and burns the result in:
+the inlet lip is narrower than the fan, so they clash within the first 14 % of the travel.</sub>
 
-![Line drawing](docs/gallery/06_side_plate_drawing.png)
-<sub>`style: "lines", edges: "sharp"`: a laser-cut part as a clean drawing.</sub>
+<img src="docs/gallery/turbofan_fan_drawing.png" width="440" alt="The fan as a line drawing">
+<sub>`style: "lines", edges: "sharp"`: the fan as a clean drawing.</sub>
 
-![Motion as a GIF](docs/gallery/wheel_tip_up.gif)
-<sub>A part motion as a GIF, annotated frame by frame (`video` with `annotate`).</sub>
-
-<sub>All images in this README come from one example project, a van roof rack. They were made by
-the tools below, unedited.</sub>
+<sub>All images in this README come from one example model, a cut-away turbofan written in CadQuery
+([`examples/turbofan.py`](examples/turbofan.py)): 15 parts, 2,436 aerofoils, 151,104 triangles.
+They were made by the tools below, unedited; [`scripts/gallery_turbofan.json`](scripts/gallery_turbofan.json)
+makes them again.</sub>
 
 ---
 
@@ -340,14 +340,16 @@ video   ─▶ AVFoundation / VideoToolbox H.264, or GIF
 cargo build --release && cargo test --release
 python3 tests/e2e_demo.py              # every tool over real MCP stdio, on examples/demo_rack.step
 python3 tests/drive.py calls.json out/ # replay a JSON list of tool calls and save the images
+python3 examples/turbofan.py examples/turbofan.step       # the README model (needs CadQuery)
+python3 tests/drive.py scripts/gallery_turbofan.json /tmp/g  # README images: stills to /tmp/g, GIFs to docs/gallery
 cargo run --release -- bench examples/demo_rack.step -o /tmp/bench.png
 ```
 
 CI (GitHub Actions, macOS arm64) runs fmt, clippy `-D warnings`, the unit tests and the end-to-end
 suite. The security workflow scans the full git history for leaked secrets (gitleaks), checks every
 dependency for advisories, licences and sources (`cargo deny check`, policy in `deny.toml`), and runs
-CodeQL once the repository is public. Dependabot keeps crates and actions up to date. `tests/e2e_roofrack.py` and `scripts/gallery_roofrack.json` (which produced the images above)
-need the example project's private STEP files in `testdata/` and skip otherwise.
+CodeQL once the repository is public. Dependabot keeps crates and actions up to date. `tests/e2e_roofrack.py` and
+`scripts/gallery_roofrack.json` need private STEP files in `testdata/` and skip otherwise.
 
 ## Licence
 
