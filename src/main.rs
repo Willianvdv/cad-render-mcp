@@ -8,6 +8,7 @@ mod project;
 mod render;
 mod scene;
 mod server;
+mod templates;
 mod video;
 
 use rmcp::ServiceExt;

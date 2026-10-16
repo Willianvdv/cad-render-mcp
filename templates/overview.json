@@ -1,0 +1,4 @@
+{
+  "description": "Four views in one image: isometric, front, right and top, each with a scale bar.",
+  "render": {"views": ["iso", "front", "right", "top"], "cols": 2}
+}

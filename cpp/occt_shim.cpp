@@ -297,7 +297,28 @@ void mesh_part(Part& p) {
     }
     std::unordered_map<uint64_t, int> half;  // edge (a<b) -> first triangle
     std::vector<gp_XYZ> fn;
-    if (curved) { half.reserve(nt * 2); fn.resize(nt); }
+    // Periodic faces (cylinders, cones...) repeat their seam nodes; give coincident nodes one id
+    // so the triangles on both sides of the seam share an edge and the seam can be a silhouette.
+    std::vector<uint32_t> same(nn + 1);
+    if (curved) {
+      half.reserve(nt * 2);
+      fn.resize(nt);
+      std::unordered_map<uint64_t, std::vector<uint32_t>> at;  // 0.1 um grid cell -> nodes
+      at.reserve(nn);
+      for (int i = 1; i <= nn; i++) {
+        const gp_XYZ& q = pts[i - 1];
+        uint64_t key = 1469598103934665603ull;
+        for (double x : {q.X(), q.Y(), q.Z()}) {
+          key = (key ^ (uint64_t)std::llround(x * 1e4)) * 1099511628211ull;
+        }
+        same[i] = (uint32_t)i;
+        auto& cell = at[key];
+        for (uint32_t j : cell) {
+          if ((pts[j - 1] - q).SquareModulus() < 1e-12) { same[i] = j; break; }
+        }
+        if (same[i] == (uint32_t)i) cell.push_back((uint32_t)i);
+      }
+    }
     for (int t = 1; t <= nt; t++) {
       int a, b, c;
       tri->Triangle(t).Get(a, b, c);
@@ -310,7 +331,8 @@ void mesh_part(Part& p) {
       int vs[3] = {a, b, c};
       for (int k = 0; k < 3; k++) {
         uint32_t u = vs[k], v = vs[(k + 1) % 3];
-        uint64_t key = ((uint64_t)std::min(u, v) << 32) | std::max(u, v);
+        uint32_t su = same[u], sv = same[v];
+        uint64_t key = ((uint64_t)std::min(su, sv) << 32) | std::max(su, sv);
         auto it = half.find(key);
         if (it == half.end()) {
           half.emplace(key, t - 1);

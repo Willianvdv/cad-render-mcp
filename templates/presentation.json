@@ -1,0 +1,4 @@
+{
+  "description": "One large clean perspective view from the front right, without labels: for slides and docs.",
+  "render": {"views": ["iso"], "width": 1600, "height": 1000, "perspective": true, "labels": false, "background": "#ffffff"}
+}

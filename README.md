@@ -6,7 +6,8 @@
 
 * CAD-style images from any angle, returned inline in about 10 ms: shaded, x-ray, section cuts,
   highlighted or ghosted parts, colour by part, on a backdrop photo
-* drawings: orthographic front, top and side views with a scale bar
+* drawings: orthographic front, top and side views with a scale bar, laid out as ISO 128
+  first-angle or third-angle sheets with all views at one scale
 * photorealistic stills (Cycles) with materials, floor and studio, sky or HDRI lighting
 * animations as GIF: orbits around the model and part motions
 * videos as MP4, CAD-style or photorealistic
@@ -37,6 +38,10 @@
 | Saved view | Same frozen view, after moving parts 40 mm up |
 |---|---|
 | ![](docs/gallery/08_lamps.png) | ![](docs/gallery/09_lamps_up40.png) |
+
+| `template: "drawing_first_angle"`: an ISO first-angle sheet | `template: "six_views_third_angle"`: all six views, one scale |
+|---|---|
+| ![](docs/gallery/18_drawing_first_angle.png) | ![](docs/gallery/19_six_views_third_angle.png) |
 
 ![Clash close-up](docs/gallery/10_tnut_clash.png)
 <sub>A 352 mm³ interference found by `clash`, shown with `highlight` + `xray` on a `region`.</sub>
@@ -89,7 +94,8 @@ in milliseconds. That's fast enough for an agent to check its own work after eve
 * **Numbers are exact.** `inspect`, `measure` and `clash` query the real B-rep through
   OpenCascade, so the agent works with exact dimensions.
 * **Views are repeatable.** `save_view` freezes a camera; `render {preset}` shows the next
-  iteration from exactly the same point, so differences jump out.
+  iteration from exactly the same point, so differences jump out. Templates give every model the
+  same set of views.
 * **Movement is checkable.** `motion` sweeps parts through a movement and reports the clearance at
   every step, so a "does it fit / does it open / does it hit" question is one call.
 
@@ -155,6 +161,45 @@ render {"views": ["iso", "iso_br", "right", "top"]}
 `save_view` stores the last render (all options plus the exact camera) in `.cad-render.json` next
 to the model; `render {preset: "name"}` reproduces it pixel-for-pixel in any later session, even
 after the model changed.
+
+### Templates: the same views for every model
+
+A template is a render setup (views, layout, style, size) that works on any model. Use one with
+`render {template: "name"}`; anything else you pass overrides it. `photo` takes a template too,
+and so do the `render` options of `video` and `motion`.
+
+| Built-in | What you get |
+|---|---|
+| `overview` | Isometric, front, right and top, each with a scale bar |
+| `drawing_first_angle` | ISO 128 first-angle sheet: front, the left view to its right, top view below, isometric in the corner |
+| `drawing_third_angle` | ISO 128 third-angle sheet: top view above the front, the right view to its right, isometric in the corner |
+| `six_views_first_angle` / `six_views_third_angle` | All six principal views arranged around the front view |
+| `turnaround` | Eight perspective views all the way around, every 45° |
+| `presentation` | One large perspective view without labels, for slides and docs |
+
+In the drawing templates the principal views share one scale and one centre (`same_scale`), so
+heights line up across a row and widths down a column, as on a drawing sheet. An empty string in
+`views` leaves a tile blank.
+
+**Your own templates** are JSON files named `<name>.json`:
+
+```json
+{
+  "description": "Side elevation for the brochure",
+  "render": {"views": ["right"], "style": "lines", "edges": "sharp", "width": 1800, "height": 600}
+}
+```
+
+`save_view {name, template: "user"}` turns the last render into one. They are read from, in this
+order (the first match wins, so a file can replace a built-in):
+
+1. `cad-render-templates/` next to the project file, to share with the model (`template: "project"`);
+2. every folder in `$CAD_RENDER_TEMPLATES` (colon-separated), e.g. a team library;
+3. `~/.config/cad-render-mcp/templates/`, your personal library (`template: "user"`);
+4. the built-ins.
+
+Files are read on every call, so edits apply immediately. An unknown option in a template is an
+error that names it. `saved` lists every template with its source.
 
 ### Present: photos and videos
 
@@ -248,7 +293,7 @@ assembly (also in `examples/`).
 | Tool | What it does |
 |---|---|
 | `open` | Load files or directories. `split_solids` gives one part per body; `deflection_mm`/`angle_deg` set tessellation; `project` sets the project file. Changed files reload on every later call. |
-| `render` | Tiled views → inline PNG. `views`, `width/height/cols`, `show/hide/highlight/ghost/focus`, `region`, `zoom`, `colors`, `color_by`, `style`, `edges`, `silhouettes`, `section`, `perspective`, `up`, `background`, `background_image`/`background_fit`, `labels`, `part_labels`, `scale_bar`, `preset`, `cameras`, `save`. |
+| `render` | Tiled views → inline PNG. `views`, `width/height/cols`, `show/hide/highlight/ghost/focus`, `region`, `zoom`, `colors`, `color_by`, `style`, `edges`, `silhouettes`, `section`, `perspective`, `up`, `background`, `background_image`/`background_fit`, `labels`, `part_labels`, `scale_bar`, `template`, `preset`, `cameras`, `same_scale`, `grid`, `save`. |
 | `photo` | Cycles still, same viewpoint options as `render`, plus `materials`, `samples`, `floor`, `environment` (studio/sky/HDRI), `environment_strength/rotation/visible`, `background`, `background_image`, `exposure`. |
 | `video` | MP4/GIF of a motion (`run`/`motion`) and/or an `orbit` swoop; `renderer` fast/photo, `fps`, `seconds`, `pingpong`, `hold`, `annotate`, plus the `photo` look options. Returns a contact sheet inline plus the file path. |
 | `parts` | List parts: id, assembly path, file, size, triangles. |
@@ -257,8 +302,8 @@ assembly (also in `examples/`).
 | `clash` | Interference volume for every overlapping pair; `touching` adds contact pairs. |
 | `move` | Translate/rotate parts, `reset`, apply or `save_pose`. |
 | `motion` | Sweep a translate/rotate in `steps`; clearance and interference per step, first contact, contact sheet; `save_as`/`run`. |
-| `save_view` | Save the last render with its exact cameras. |
-| `saved` | List or delete saved views, poses and motions. |
+| `save_view` | Save the last render with its exact cameras, or with `template: "user"`/`"project"` as a template for any model. |
+| `saved` | List or delete saved views, poses and motions; lists the templates and their folders. |
 | `close` | Unload everything. |
 
 * **Part selectors:** an id (`p12`), an exact name or assembly path, a glob (`BAR_*`), or a

@@ -1,0 +1,4 @@
+{
+  "description": "Eight perspective views all the way around at 20 degrees elevation, every 45 degrees from the front.",
+  "render": {"views": ["az0el20", "az45el20", "az90el20", "az135el20", "az180el20", "az225el20", "az270el20", "az315el20"], "cols": 4, "perspective": true}
+}

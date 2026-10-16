@@ -1,0 +1,4 @@
+{
+  "description": "All six principal views in ISO third-angle arrangement around the front view: top above, bottom below, left view on the left, right view and rear on the right. One shared scale.",
+  "render": {"views": ["", "top", "", "", "left", "front", "right", "back", "", "bottom", "", ""], "cols": 4, "same_scale": true, "grid": false, "style": "lines", "edges": "sharp", "background": "#ffffff"}
+}

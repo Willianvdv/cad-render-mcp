@@ -18,5 +18,7 @@
  {"name":"14_photo_backdrop","tool":"photo","args":{"views":["az-35el25"],"environment":"sky","environment_rotation":110,"background_image":"docs/gallery/backdrop_synthetic.png","width":1400,"height":875,"samples":96,"materials":{"PLACEHOLDERS:1#1":"rubber"}}},
  {"name":"x_gif1","tool":"video","args":{"run":"wheel_tip_up","render":{"views":["az-60el20"]},"width":720,"height":406,"fps":15,"seconds":3,"pingpong":true,"format":"gif","save":"docs/gallery/wheel_tip_up.gif"}},
  {"name":"x_gif2","tool":"video","args":{"orbit":{},"width":720,"height":406,"fps":15,"seconds":6,"format":"gif","save":"docs/gallery/swoop.gif"}},
- {"name":"x_gif3","tool":"video","args":{"orbit":{},"renderer":"photo","width":560,"height":316,"fps":12,"seconds":5,"samples":16,"format":"gif","save":"docs/gallery/swoop_photo.gif","materials":{"FEET_HW*":"zinc","FRONT_HW*":"zinc","PLACEHOLDERS:1#2":"black_powdercoat","PLACEHOLDERS:1#3":"black_powdercoat","PLACEHOLDERS:1#4":"black_powdercoat","PLACEHOLDERS:1#5":"black_powdercoat","PLACEHOLDERS:1#1":"rubber"}}}
+ {"name":"x_gif3","tool":"video","args":{"orbit":{},"renderer":"photo","width":560,"height":316,"fps":12,"seconds":5,"samples":16,"format":"gif","save":"docs/gallery/swoop_photo.gif","materials":{"FEET_HW*":"zinc","FRONT_HW*":"zinc","PLACEHOLDERS:1#2":"black_powdercoat","PLACEHOLDERS:1#3":"black_powdercoat","PLACEHOLDERS:1#4":"black_powdercoat","PLACEHOLDERS:1#5":"black_powdercoat","PLACEHOLDERS:1#1":"rubber"}}},
+ {"name":"18_drawing_first_angle","tool":"render","args":{"template":"drawing_first_angle","width":800,"height":450}},
+ {"name":"19_six_views_third_angle","tool":"render","args":{"template":"six_views_third_angle"}}
 ]

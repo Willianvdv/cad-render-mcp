@@ -90,6 +90,11 @@ pub struct RenderReq<'a> {
     pub background: Option<[f32; 3]>,
     pub labels: bool,
     pub scale_bar: bool,
+    /// Fit the principal views (front/back/left/right/top/bottom) at one shared scale, so they
+    /// line up like the views of a drawing.
+    pub same_scale: bool,
+    /// Separator lines between tiles.
+    pub grid: bool,
     pub part_labels: Vec<(usize, String)>,
     pub xray: bool,
     pub unlit: bool,
@@ -498,10 +503,11 @@ impl Renderer {
         let cam_stride = std::mem::size_of::<CameraU>().div_ceil(a) * a;
         let part_stride = std::mem::size_of::<PartU>().div_ceil(a) * a;
         let mut cam_bytes = vec![0u8; cam_stride * n as usize];
-        let mut fits = Vec::new();
         let aspect = r.tile_w as f32 / r.tile_h as f32;
-        for (k, v) in r.views.iter().enumerate() {
-            let f = match &v.fixed {
+        let mut fits: Vec<camera::Fitted> = r
+            .views
+            .iter()
+            .map(|v| match &v.fixed {
                 Some(spec) => camera::build(spec, scene_pts.iter(), aspect, r.tile_h),
                 None => camera::fit(
                     v.dir,
@@ -513,7 +519,30 @@ impl Renderer {
                     r.perspective,
                     r.tile_h,
                 ),
-            };
+            })
+            .collect();
+        if r.same_scale && !r.perspective {
+            // Every principal view takes the largest one's scale; each stays centred on the
+            // middle of the framed box, so shared axes line up across tiles.
+            let shared = |v: &camera::View| v.principal && v.fixed.is_none() && !v.blank;
+            let hh = r
+                .views
+                .iter()
+                .zip(&fits)
+                .filter(|(v, _)| shared(v))
+                .map(|(_, f)| f.spec.half_height)
+                .fold(0.0f32, f32::max);
+            for (v, f) in r.views.iter().zip(fits.iter_mut()) {
+                if shared(v) && hh > 0.0 {
+                    let spec = camera::CamSpec {
+                        half_height: hh,
+                        ..f.spec
+                    };
+                    *f = camera::build(&spec, scene_pts.iter().chain(&frame_pts), aspect, r.tile_h);
+                }
+            }
+        }
+        for (k, f) in fits.iter().enumerate() {
             let light = (-f.dir * 0.8 + f.up * 0.45 - f.right * 0.35).normalize();
             let (clip, on) = match r.section {
                 Some((nrm, d, auto)) if auto && f.dir.dot(nrm) > 0.0 => {
@@ -543,7 +572,6 @@ impl Renderer {
             };
             cam_bytes[k * cam_stride..k * cam_stride + std::mem::size_of::<CameraU>()]
                 .copy_from_slice(bytemuck::bytes_of(&u));
-            fits.push(f);
         }
         let np = r.meshes.len().max(1);
         let mut part_bytes = vec![0u8; part_stride * np * slots];
@@ -635,6 +663,9 @@ impl Renderer {
             });
             let show_edges = r.edges != Edges::None;
             for k in 0..n {
+                if r.views[k as usize].blank {
+                    continue;
+                }
                 let (tx, ty) = ((k % cols) * r.tile_w, (k / cols) * r.tile_h);
                 pass.set_viewport(
                     tx as f32,
@@ -787,6 +818,9 @@ impl Renderer {
             let k = k as u32;
             let (tx, ty) = ((k % cols) * r.tile_w, (k / cols) * r.tile_h);
             let f = &fits[k as usize];
+            if v.blank {
+                continue;
+            }
             if r.labels {
                 cv.label(
                     tx as i32 + 6 * scale,
@@ -888,7 +922,7 @@ impl Renderer {
                 cv.text(x0, y0 - 12 * scale, &txt, scale, [30, 30, 30, 255]);
             }
         }
-        if n > 1 {
+        if n > 1 && r.grid {
             // tile separators
             for k in 1..cols {
                 cv.rect((k * r.tile_w) as i32, 0, 1, h as i32, [170, 175, 185, 255]);

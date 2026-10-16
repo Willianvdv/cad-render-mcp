@@ -35,11 +35,33 @@ pub struct View {
     pub fixed: Option<CamSpec>,
     /// Viewing direction (camera -> scene), model space.
     pub dir: Vec3,
+    /// Empty tile (a gap in a drawing layout): nothing is drawn.
+    pub blank: bool,
+    /// One of the six principal views (front/back/left/right/top/bottom).
+    pub principal: bool,
+}
+
+/// View specs that leave their tile empty ("", "-" or "blank").
+pub fn is_blank(spec: &str) -> bool {
+    matches!(spec.trim(), "" | "-" | "blank")
 }
 
 /// Parse one view spec. Named views assume Z-up with "front" looking along +Y (camera at -Y).
 pub fn parse_view(spec: &str, up: Up) -> anyhow::Result<View> {
     let s = spec.trim().to_ascii_lowercase();
+    if is_blank(&s) {
+        return Ok(View {
+            label: String::new(),
+            fixed: None,
+            dir: up.map(Vec3::new(0.0, 1.0, 0.0)),
+            blank: true,
+            principal: false,
+        });
+    }
+    let principal = matches!(
+        s.as_str(),
+        "front" | "back" | "rear" | "left" | "right" | "top" | "bottom"
+    );
     // canonical Z-up directions from the camera position towards the scene
     let named = |cam_pos: Vec3| -> Vec3 { -cam_pos.normalize() };
     let d = match s.as_str() {
@@ -70,6 +92,8 @@ pub fn parse_view(spec: &str, up: Up) -> anyhow::Result<View> {
                     label: spec.trim().to_uppercase(),
                     fixed: None,
                     dir: d.normalize(),
+                    blank: false,
+                    principal: false,
                 });
             } else if let Some(rest) = s.strip_prefix("az") {
                 // az<deg>el<deg>: camera azimuth from front (-Y) towards right (+X), elevation above horizon
@@ -91,6 +115,8 @@ pub fn parse_view(spec: &str, up: Up) -> anyhow::Result<View> {
         label: spec.trim().to_uppercase(),
         fixed: None,
         dir: up.map(d).normalize(),
+        blank: false,
+        principal,
     })
 }
 
@@ -136,8 +162,10 @@ pub fn fit(
 ) -> Fitted {
     let mut upv = up.vec();
     if dir.cross(upv).length() < 1e-3 {
-        // looking straight up/down: use model +Y (or -Z for Y-up) as screen up
-        upv = if up == Up::Z { Vec3::Y } else { Vec3::NEG_Z };
+        // Looking straight down: model +Y (-Z for Y-up) is screen up. Looking straight up the
+        // other way round, so +X points right in both, as in the front view (drawing standard).
+        let back = if up == Up::Z { Vec3::Y } else { Vec3::NEG_Z };
+        upv = if dir.dot(upv) < 0.0 { back } else { -back };
     }
     let right = dir.cross(upv).normalize();
     let up_s = right.cross(dir).normalize();
@@ -238,6 +266,22 @@ pub fn build<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn top_and_bottom_keep_x_to_the_right() {
+        let pts = [Vec3::splat(-1.0), Vec3::splat(1.0)];
+        for up in [Up::Z, Up::Y] {
+            for v in ["front", "top", "bottom"] {
+                let d = parse_view(v, up).unwrap().dir;
+                let f = fit(d, up, &pts, &pts, 1.0, 1.0, false, 100);
+                assert!(
+                    (f.right - Vec3::X).length() < 1e-5,
+                    "{v}: right {:?}",
+                    f.right
+                );
+            }
+        }
+    }
 
     #[test]
     fn named_views() {

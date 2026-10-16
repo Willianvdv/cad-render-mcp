@@ -18,6 +18,14 @@ DEMO = os.path.join(ROOT, "examples/demo_rack.step")
 def main():
     s = Suite(OUT)
     print(f"images: {OUT}")
+    # a template folder of our own: one override of a built-in, one with a typo
+    tdir = os.path.join(OUT, "templates_env")
+    shutil.rmtree(tdir, ignore_errors=True)
+    shutil.rmtree(os.path.join(OUT, "cad-render-templates"), ignore_errors=True)
+    os.makedirs(tdir)
+    json.dump({"description": "ours", "render": {"views": ["front"], "width": 300, "height": 200}}, open(os.path.join(tdir, "presentation.json"), "w"))
+    json.dump({"render": {"veiws": ["iso"]}}, open(os.path.join(tdir, "typo.json"), "w"))
+    os.environ["CAD_RENDER_TEMPLATES"] = tdir
     c = Client()
     s.check(c.init["serverInfo"]["name"] == "cad-render-mcp", "server identifies as cad-render-mcp")
     instr = c.init.get("instructions", "")
@@ -78,6 +86,31 @@ def main():
         s.check("frozen camera" in t, "view saved with frozen camera")
         r, t, img2 = s.step(c, "preset", "render", {"preset": "corner"}, True)
         s.check(img1 == img2, "preset renders byte-identically")
+
+        # templates: the same setup on any model
+        r, t, img = s.step(c, "template drawing", "render", {"template": "drawing_first_angle"}, True)
+        s.check(img and png_size(img) == (1600, 1200) and 'template "drawing_first_angle" (built-in)' in t, "built-in template: first-angle drawing")
+        s.step(c, "save sheet", "save_view", {"name": "sheet"}, quiet=True)
+        cams = json.load(open(proj))["views"]["sheet"]["cameras"]
+        hh = [round(cam["half_height"], 3) for cam in cams]
+        s.check(hh[0] == hh[1] == hh[2] != hh[3], f"front, left and top share one scale, iso fits its own ({hh})")
+        s.check(abs(cams[0]["target"][0] - cams[2]["target"][0]) < 1e-3 and abs(cams[0]["target"][2] - cams[1]["target"][2]) < 1e-3, "views line up: front/top share x, front/left share z")
+        r, t, img = s.step(c, "template six views", "render", {"template": "six_views_first_angle"}, True)
+        s.check(img and png_size(img) == (2560, 1440) and "[-, BOTTOM, -, -, RIGHT, FRONT" in t, "six views around the front, blank tiles in the corners")
+        r, t, img = s.step(c, "template override", "render", {"template": "overview", "views": ["top"]}, True)
+        s.check(img and png_size(img) == (1200, 900), "call options override the template")
+        r, t, img = s.step(c, "template from folder", "render", {"template": "presentation"}, True)
+        s.check(img and png_size(img) == (300, 200) and "templates_env" in t, "a template folder overrides a built-in")
+        s.step(c, "corner xray", "render", {"views": ["az30el20"], "region": [-450, -20, 0, 0, 450, 320], "style": "xray"}, quiet=True)
+        r, t, _ = s.step(c, "save template", "save_view", {"name": "corner_close", "template": "project", "note": "corner close-up"}, quiet=True)
+        tpl = os.path.join(OUT, "cad-render-templates", "corner_close.json")
+        saved_tpl = json.load(open(tpl)) if os.path.exists(tpl) else {}
+        s.check(saved_tpl.get("render", {}).get("style") == "xray" and "cameras" not in saved_tpl.get("render", {}), "save_view writes a project template (options, no cameras)")
+        r, t, img = s.step(c, "use saved template", "render", {"template": "corner_close"}, True)
+        s.check(img is not None and "cad-render-templates" in t, "saved template renders")
+        r, _ = c.call("render", {"template": "typo"})
+        t = text_of(r)
+        s.check(r.get("isError") and "veiws" in t, "a template with an unknown option is refused, naming it")
         bg = os.path.join(OUT, "plate.png")
         open(bg, "wb").write(img1)
         r, t, img = s.step(c, "backdrop", "render", {"views": ["iso"], "background_image": bg, "width": 640, "height": 400}, True)
@@ -101,6 +134,8 @@ def main():
 
     r, t, _ = s.step(c, "saved", "saved", {})
     s.check("tip" in t and "lifted" in t, "saved lists pose and motion")
+    s.check("drawing_first_angle: ISO 128 first-angle" in t and "presentation: ours" in t, "saved lists built-in and own templates")
+    s.check("failed to load" in t and "veiws" in t, "saved reports a broken template file")
 
     # edit loop: change the file on disk -> next call reloads it
     work = os.path.join(OUT, "work.step")

@@ -5,6 +5,7 @@ use crate::photo;
 use crate::project::{self, Project, SavedPose, SavedView};
 use crate::render::{Edges, PartStyle, RenderReq, Renderer};
 use crate::scene::{self, Scene};
+use crate::templates;
 use base64::Engine;
 use glam::{Mat4, Vec3};
 use rmcp::handler::server::{router::tool::ToolRouter, wrapper::Parameters};
@@ -120,6 +121,11 @@ pub struct SectionSpec {
 
 #[derive(Serialize, Deserialize, JsonSchema, Clone, Default)]
 pub struct RenderParams {
+    /// Start from a template: a reusable render setup that works on any model. Built-in:
+    /// overview, drawing_first_angle, drawing_third_angle, six_views_first_angle,
+    /// six_views_third_angle, turnaround, presentation; plus your own (`saved` lists them all).
+    /// Other fields given here override it.
+    pub template: Option<String>,
     /// Start from a saved view (see `save_view`/`saved`); other fields given here override it.
     /// Its frozen cameras are reused unless you also pass views/region/focus/zoom/perspective/up.
     pub preset: Option<String>,
@@ -135,6 +141,12 @@ pub struct RenderParams {
     pub height: Option<u32>,
     /// Tiles per row (default: 2 for 2-4 views, 3 for more).
     pub cols: Option<u32>,
+    /// Fit the principal views (front/back/left/right/top/bottom) at one shared scale, centred
+    /// on the same point, so they line up like the views of a drawing (default false). Use "" in
+    /// `views` for an empty tile.
+    pub same_scale: Option<bool>,
+    /// Separator lines between tiles (default true).
+    pub grid: Option<bool>,
     /// Only show these parts (selectors: id like "p3", exact name/path, glob like "BAR_*", or substring).
     pub show: Option<Vec<String>>,
     /// Hide these parts.
@@ -312,6 +324,8 @@ pub struct Look {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct PhotoParams {
+    /// Template for the viewpoint (views, framing, perspective), as in `render`.
+    pub template: Option<String>,
     /// Saved view to photograph (its frozen camera is reused unless you reframe).
     pub preset: Option<String>,
     /// View (first one is used): same names as `render` (iso, front, az30el20, dir:x,y,z).
@@ -405,6 +419,10 @@ pub struct SaveViewParams {
     pub note: Option<String>,
     /// Store the exact cameras so the view never drifts when the model changes (default true).
     pub freeze: Option<bool>,
+    /// Save it as a template instead, for any model: "user" (your library,
+    /// ~/.config/cad-render-mcp/templates) or "project" (cad-render-templates/ next to the
+    /// project file, to share with the model). Templates keep the options, not the cameras.
+    pub template: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -648,45 +666,56 @@ pub struct Frames {
     pub raw: bool,
 }
 
-/// Merge a saved view into the call's parameters; returns its frozen cameras unless the call
-/// changes the framing.
+/// Merge the template and saved view into the call's parameters (template < saved view < call);
+/// returns the saved view's frozen cameras unless the call changes the framing.
 fn resolve_preset(
     app: &App,
     p: &RenderParams,
 ) -> anyhow::Result<(RenderParams, Option<Vec<CamSpec>>, Option<String>)> {
-    let Some(name) = &p.preset else {
+    if p.template.is_none() && p.preset.is_none() {
         return Ok((p.clone(), None, None));
-    };
-    let sv = app.project.views.get(name).ok_or_else(|| {
-        anyhow::anyhow!(
-            "no saved view {name:?}; saved: {}",
-            app.project
-                .views
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    })?;
+    }
+    let mut notes = Vec::new();
+    let mut base = serde_json::json!({});
+    if let Some(name) = &p.template {
+        let t = templates::get(app.project_path.as_deref(), name)?;
+        notes.push(format!("template {name:?} ({})", t.source));
+        base = t.params;
+    }
+    let mut cams = None;
+    if let Some(name) = &p.preset {
+        let sv = app.project.views.get(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no saved view {name:?}; saved: {}",
+                app.project
+                    .views
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+        base = project::overlay(&base, &sv.params);
+        let reframed = p.views.is_some()
+            || p.region.is_some()
+            || p.focus.is_some()
+            || p.zoom.is_some()
+            || p.perspective.is_some()
+            || p.up.is_some()
+            || p.cameras.is_some();
+        cams = if reframed { None } else { sv.cameras.clone() };
+        notes.push(format!(
+            "view {name:?}{}",
+            if cams.is_some() {
+                " (frozen camera)"
+            } else {
+                ""
+            }
+        ));
+    }
     let merged: RenderParams =
-        serde_json::from_value(project::overlay(&sv.params, &serde_json::to_value(p)?))?;
-    let reframed = p.views.is_some()
-        || p.region.is_some()
-        || p.focus.is_some()
-        || p.zoom.is_some()
-        || p.perspective.is_some()
-        || p.up.is_some()
-        || p.cameras.is_some();
-    let cams = if reframed { None } else { sv.cameras.clone() };
-    let note = Some(format!(
-        "view {name:?}{}",
-        if cams.is_some() {
-            " (frozen camera)"
-        } else {
-            ""
-        }
-    ));
-    Ok((merged, cams, note))
+        serde_json::from_value(project::overlay(&base, &serde_json::to_value(p)?))?;
+    Ok((merged, cams, Some(notes.join("; "))))
 }
 
 pub fn do_render(app: &mut App, p: &RenderParams) -> anyhow::Result<Rendered> {
@@ -728,13 +757,21 @@ pub fn do_render_frames(
         Some(cams) => cams
             .into_iter()
             .enumerate()
-            .map(|(k, c)| camera::View {
-                label: view_specs
-                    .get(k)
-                    .map(|v| v.to_uppercase())
-                    .unwrap_or_else(|| format!("VIEW {}", k + 1)),
-                dir: Vec3::from(c.dir),
-                fixed: Some(c),
+            .map(|(k, c)| {
+                let spec = view_specs.get(k);
+                let blank = spec.is_some_and(|v| camera::is_blank(v));
+                camera::View {
+                    label: if blank {
+                        String::new()
+                    } else {
+                        spec.map(|v| v.to_uppercase())
+                            .unwrap_or_else(|| format!("VIEW {}", k + 1))
+                    },
+                    dir: Vec3::from(c.dir),
+                    fixed: Some(c),
+                    blank,
+                    principal: false,
+                }
             })
             .collect(),
         None => view_specs
@@ -754,6 +791,8 @@ pub fn do_render_frames(
                 label: l.clone(),
                 dir: base.dir,
                 fixed: base.fixed,
+                blank: false,
+                principal: base.principal,
             })
             .collect();
     }
@@ -915,6 +954,8 @@ pub fn do_render_frames(
         background,
         labels: p.labels.unwrap_or(true),
         scale_bar: p.scale_bar.unwrap_or(true) && !p.perspective.unwrap_or(false),
+        same_scale: p.same_scale.unwrap_or(false),
+        grid: p.grid.unwrap_or(true),
         part_labels,
         xray: style == "xray",
         unlit: style == "lines",
@@ -941,6 +982,7 @@ pub fn do_render_frames(
     if frames.is_none() {
         let mut keep = p.clone();
         keep.preset = None;
+        keep.template = None;
         keep.cameras = None;
         keep.save = None;
         app.last_render = Some((serde_json::to_value(&keep)?, out.cams.clone()));
@@ -951,7 +993,11 @@ pub fn do_render_frames(
         out.width,
         out.height,
         n,
-        names.join(", "),
+        names
+            .iter()
+            .map(|n| if n.is_empty() { "-" } else { n.as_str() })
+            .collect::<Vec<_>>()
+            .join(", "),
         vis.len(),
         app.scene.parts.len(),
         t0.elapsed().as_secs_f64() * 1e3,
@@ -1690,6 +1736,7 @@ pub fn do_photo(app: &mut App, p: &PhotoParams) -> anyhow::Result<(Vec<u8>, Stri
             .is_some_and(|v| v.cameras.is_some())
     });
     let rp = RenderParams {
+        template: p.template.clone(),
         preset: p.preset.clone(),
         views: p.views.clone(),
         cameras: p.cameras.clone(),
@@ -2343,7 +2390,7 @@ impl CadRender {
     }
 
     #[tool(
-        description = "Save the last render (parameters + exact cameras) as a named view in the project file, so `render {preset: name}` reproduces the same point of view in any session.",
+        description = "Save the last render (parameters + exact cameras) as a named view in the project file, so `render {preset: name}` reproduces the same point of view in any session. With `template` it goes to the template library instead (options only, for any model: `render {template: name}`).",
         annotations(
             title = "Save viewpoint",
             read_only_hint = false,
@@ -2361,6 +2408,26 @@ impl CadRender {
                 .last_render
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("render something first"))?;
+            if let Some(scope) = &p.template {
+                let dir = match scope.as_str() {
+                    "user" => templates::user_dir()
+                        .ok_or_else(|| anyhow::anyhow!("no home folder for the user library"))?,
+                    "project" => app
+                        .project_path
+                        .as_deref()
+                        .and_then(std::path::Path::parent)
+                        .ok_or_else(|| anyhow::anyhow!("no project yet: call open first"))?
+                        .join("cad-render-templates"),
+                    o => anyhow::bail!("template must be \"user\" or \"project\", got {o:?}"),
+                };
+                let path = templates::save(&dir, &p.name, p.note.as_deref().unwrap_or(""), params)?;
+                return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "saved template {:?} in {}; use it on any model with render {{template: {:?}}}",
+                    p.name,
+                    path.display(),
+                    p.name
+                ))]));
+            }
             let freeze = p.freeze.unwrap_or(true);
             app.project.views.insert(
                 p.name.clone(),
@@ -2381,7 +2448,7 @@ impl CadRender {
     }
 
     #[tool(
-        description = "List saved views, poses and motions of the project (or delete one).",
+        description = "List saved views, poses and motions of the project (or delete one), and the render templates (built-in and your own).",
         annotations(
             title = "Saved views, poses, motions",
             read_only_hint = false,
@@ -2449,6 +2516,23 @@ impl CadRender {
             for (k, v) in &app.project.motions {
                 let _ = writeln!(s, "  {k}: {}", v);
             }
+            let (all, errors) = templates::all(app.project_path.as_deref());
+            let _ = writeln!(s, "\ntemplates (render {{template: name}}, any model):");
+            for t in &all {
+                let _ = writeln!(s, "  {}: {} [{}]", t.name, t.description, t.source);
+            }
+            for e in &errors {
+                let _ = writeln!(s, "  failed to load: {e}");
+            }
+            let _ = writeln!(
+                s,
+                "template folders: {}",
+                templates::dirs(app.project_path.as_deref())
+                    .iter()
+                    .map(|d| d.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             Ok(CallToolResult::success(vec![ContentBlock::text(s)]))
         })
         .await
@@ -2496,7 +2580,7 @@ impl ServerHandler for CadRender {
                  2. Look: `render` returns the image inline in ~10 ms. Ask for several views in ONE call (views [\"iso\",\"front\",\"right\",\"top\"]); use show/hide/highlight/ghost, section, region (close-ups), style xray/lines, part_labels, background_image. Orthographic views carry a scale bar.\n\
                  3. Numbers, never from pixels: `inspect` (volume, mass, bend/hole radii), `measure` (exact min distance), `clash` (interference volumes).\n\
                  4. Movement: `move` places parts (poses, saved by name); `motion` sweeps parts through a translate/rotate and reports clearance per step and the first contact.\n\
-                 5. Repeatable views: `save_view` stores the last render incl. exact camera; `render {{preset}}` reproduces it in any session. `saved` lists views/poses/motions (kept in .cad-render.json next to the model).\n\
+                 5. Repeatable views: `save_view` stores the last render incl. exact camera; `render {{preset}}` reproduces it in any session. `saved` lists views/poses/motions (kept in .cad-render.json next to the model). Templates are the same for any model: `render {{template: \"drawing_first_angle\"}}` (ISO first-angle drawing, views at one scale), overview, drawing_third_angle, six_views_*, turnaround, presentation, or the user's own; `save_view {{name, template: \"user\"}}` adds one; `saved` lists them.\n\
                  6. Presentation: `photo` (Cycles path tracing: materials, environment studio/sky/HDRI, backdrop photos with real shadows; seconds) and `video` (MP4/GIF of a motion and/or an orbit swoop, fast or photo frames, exact clearance burned in).",
                 crate::occt::occt_version()
             ))

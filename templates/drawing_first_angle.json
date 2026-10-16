@@ -1,0 +1,4 @@
+{
+  "description": "ISO 128 first-angle drawing (European): front view, the left view to its right, the top view below it, isometric in the free corner. Front, left and top share one scale and line up.",
+  "render": {"views": ["front", "left", "top", "iso"], "cols": 2, "same_scale": true, "grid": false, "style": "lines", "edges": "sharp", "background": "#ffffff"}
+}

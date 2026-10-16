@@ -1,0 +1,4 @@
+{
+  "description": "ISO 128 third-angle drawing (American): top view above the front view, the right view to its right, isometric in the free corner. Front, right and top share one scale and line up.",
+  "render": {"views": ["top", "iso", "front", "right"], "cols": 2, "same_scale": true, "grid": false, "style": "lines", "edges": "sharp", "background": "#ffffff"}
+}
