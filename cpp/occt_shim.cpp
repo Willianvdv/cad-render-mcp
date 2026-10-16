@@ -161,7 +161,13 @@ void collect(const Handle(XCAFDoc_ShapeTool)& st, const Handle(XCAFDoc_ColorTool
     loc = parent_loc * XCAFDoc_ShapeTool::GetLocation(label);
   }
   std::string name = label_name(label);
-  if (name.empty() || name.rfind("=>", 0) == 0) name = label_name(ref);
+  // Unnamed instances come back empty, as "=>[0:1:1:2]" or as their STEP entity id ("2", as
+  // CadQuery writes them): use the name of the part they place instead.
+  const bool numeric = !name.empty() && name.find_first_not_of("0123456789") == std::string::npos;
+  if (name.empty() || numeric || name.rfind("=>", 0) == 0) {
+    std::string r = label_name(ref);
+    if (!r.empty()) name = r;
+  }
   std::string path = parent_path.empty() ? name : parent_path + "/" + name;
   if (XCAFDoc_ShapeTool::IsAssembly(ref) && depth < 64) {
     TDF_LabelSequence comps;
