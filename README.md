@@ -350,6 +350,12 @@ suite. The security workflow scans the full git history for leaked secrets (gitl
 dependency for advisories, licences and sources (`cargo deny check`, policy in `deny.toml`), and runs
 CodeQL. Dependabot keeps crates and actions up to date.
 
+## Related
+
+| Project | What it is |
+|---|---|
+| [**shaper-export-mcp**](https://github.com/Willianvdv/shaper-export-mcp) | Export CAD geometry to Shaper Origin SVG over MCP, with the exact cut-type colour encoding (exterior / interior / pocket / guide / on-line). |
+
 ## Licence
 
 MIT OR Apache-2.0, at your option. OpenCascade (LGPL-2.1 + Open CASCADE exception) is used as
